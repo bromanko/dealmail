@@ -16,15 +16,12 @@ const ExistingPath = extendType(string, {
   },
 });
 
-// Custom type for email limit that handles "all" or number values
-type EmailLimit = number | "all";
-
 const EmailLimitType = extendType(string, {
   displayName: "email-limit",
   description: 'Number of emails to fetch or "all"',
   async from(limitStr) {
     if (limitStr.toLowerCase() === "all") {
-      return "all";
+      return Infinity;
     }
 
     const num = parseInt(limitStr, 10);
@@ -77,9 +74,6 @@ export const getEmailsCommand = command({
     }),
   },
   handler: async ({ username, password, outputDir, limit, pretty }) => {
-    // Convert "all" to Infinity for use in the code
-    const emailLimit = limit === "all" ? Infinity : limit;
-
     console.log(`Output directory set to: ${outputDir}`);
 
     console.log(`Starting email fetch process...`);
@@ -132,7 +126,7 @@ export const getEmailsCommand = command({
             inMailbox: inbox.id,
           },
           sort: [{ property: "receivedAt", isAscending: false }],
-          limit: emailLimit,
+          limit,
           calculateTotal: true,
         },
       ]);
