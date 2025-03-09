@@ -1,13 +1,38 @@
 {
   "name": "dealmail",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+  "version": "0.1.0",
+  "description": "Command line utility to extract deal information from emails",
+  "main": "dist/index.js",
+  "bin": {
+    "dealmail": "./dist/index.js"
   },
-  "keywords": [],
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node --esm src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint . --ext .ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "email",
+    "deals",
+    "cli"
+  ],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
+  "dependencies": {
+    "cmd-ts": "^0.13.0",
+    "fp-ts": "^2.16.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "eslint": "^8.53.0",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.2.2",
+    "vitest": "^0.34.6"
+  },
   "packageManager": "pnpm@10.5.2"
 }
