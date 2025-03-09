@@ -1,7 +1,40 @@
-import { command, option, string, flag } from "cmd-ts";
+import { command, option, string, flag, extendType } from "cmd-ts";
 import * as fs from "fs/promises";
+import { existsSync } from "fs";
 import * as path from "path";
 import { JamClient } from "jmap-jam";
+
+const ExistingPath = extendType(string, {
+  displayName: "path",
+  description: "An existing path",
+  async from(str) {
+    const resolved = path.resolve(str);
+    if (!existsSync(resolved)) {
+      throw new Error("Path doesn't exist");
+    }
+    return resolved;
+  },
+});
+
+// Custom type for email limit that handles "all" or number values
+type EmailLimit = number | "all";
+
+const EmailLimitType = extendType(string, {
+  displayName: "email-limit",
+  description: 'Number of emails to fetch or "all"',
+  async from(limitStr) {
+    if (limitStr.toLowerCase() === "all") {
+      return "all";
+    }
+
+    const num = parseInt(limitStr, 10);
+    if (isNaN(num) || num <= 0) {
+      throw new Error('Limit must be a positive number or "all"');
+    }
+
+    return num;
+  },
+});
 
 /**
  * Command to fetch emails from Fastmail using JMAP API
@@ -26,18 +59,17 @@ export const getEmailsCommand = command({
       env: "FASTMAIL_PASSWORD",
     }),
     outputDir: option({
-      type: string,
+      type: ExistingPath,
       long: "output",
       short: "o",
-      description: "Directory to save email data (default: ./emails)",
-      defaultValue: () => "./emails",
+      description: "Directory to save email data",
     }),
     limit: option({
-      type: string,
+      type: EmailLimitType,
       long: "limit",
       short: "l",
-      description: "Maximum number of emails to fetch (default: 100)",
-      defaultValue: () => "100",
+      description: 'Maximum number of emails to fetch or "all" (default: 100)',
+      defaultValue: () => 100,
     }),
     pretty: flag({
       long: "pretty",
@@ -45,21 +77,10 @@ export const getEmailsCommand = command({
     }),
   },
   handler: async ({ username, password, outputDir, limit, pretty }) => {
-    // Parse limit value
-    const emailLimit = limit === "all" ? Infinity : parseInt(limit, 10);
-    if (isNaN(emailLimit)) {
-      console.error("Error: Limit must be a number or 'all'");
-      process.exit(1);
-    }
+    // Convert "all" to Infinity for use in the code
+    const emailLimit = limit === "all" ? Infinity : limit;
 
-    // Create output directory if it doesn't exist
-    try {
-      await fs.mkdir(outputDir, { recursive: true });
-      console.log(`Output directory created/verified: ${outputDir}`);
-    } catch (error) {
-      console.error(`Error creating output directory: ${error}`);
-      process.exit(1);
-    }
+    console.log(`Output directory set to: ${outputDir}`);
 
     console.log(`Starting email fetch process...`);
     console.log(`Connecting to Fastmail as ${username}`);
