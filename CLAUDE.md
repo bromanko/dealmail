@@ -20,7 +20,7 @@
 - Group imports: built-in → external → internal
 - Error handling: use typed errors with meaningful messages
 - Organize code in feature-based directories
-- Use functional programming patterns
+- Prefer functional programming patterns and using fp-ts
 - Only add comments for complex logic
 
 ## Project Structure
