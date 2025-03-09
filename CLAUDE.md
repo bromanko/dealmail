@@ -21,6 +21,7 @@
 - Error handling: use typed errors with meaningful messages
 - Organize code in feature-based directories
 - Use functional programming patterns
+- Only add comments for complex logic
 
 ## Project Structure
 - `src/` - Source code
