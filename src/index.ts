@@ -1,4 +1,4 @@
-import { command, flag, run, subcommands, option, string } from "cmd-ts";
+import { command, flag, run } from "cmd-ts";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { fileURLToPath } from "url";
@@ -18,35 +18,26 @@ const getVersion = async (): Promise<string> => {
   }
 };
 
-const app = subcommands({
+const app = command({
   name: "dealmail",
-  cmds: {
-    // Main app command
-    app: command({
-      name: "dealmail",
-      description: "Extract deal information from emails",
-      args: {},
-      flags: {
-        version: flag({
-          type: string,
-          long: "version",
-          short: "v",
-          description: "Show the application version",
-        }),
-      },
-      handler: async ({ version }) => {
-        if (version !== undefined) {
-          const appVersion = await getVersion();
-          console.log(`dealmail v${appVersion}`);
-          return;
-        }
-
-        // TODO: Implement main functionality
-        console.log("Welcome to dealmail!");
-      },
+  description: "Extract deal information from emails",
+  args: {
+    version: flag({
+      long: "version",
+      short: "v",
+      description: "Show the application version",
     }),
   },
-  defaultCmd: "app",
+  handler: async ({ version }) => {
+    if (version) {
+      const appVersion = await getVersion();
+      console.log(`dealmail v${appVersion}`);
+      return;
+    }
+
+    // TODO: Implement main functionality
+    console.log("Welcome to dealmail!");
+  },
 });
 
 run(app, process.argv.slice(2));
