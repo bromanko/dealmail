@@ -17,6 +17,7 @@
             nodejs_latest
             nodePackages.typescript
             nodePackages.ts-node
+            nodePackages.pnpm
           ];
         };
       }

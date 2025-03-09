@@ -4,12 +4,12 @@
 - Load dev environment: `direnv allow` or `nix develop`
 
 ## Commands
-- Setup: `npm install`
-- Build: `npm run build`
-- Test: `npm test`
-- Test single file: `npm test -- path/to/test.spec.ts`
-- Lint: `npm run lint`
-- Type check: `npm run typecheck`
+- Setup: `pnpm install`
+- Build: `pnpm run build`
+- Test: `pnpm test`
+- Test single file: `pnpm test -- path/to/test.spec.ts`
+- Lint: `pnpm run lint`
+- Type check: `pnpm run typecheck`
 
 ## Code Style
 - Use TypeScript strict mode with explicit types
