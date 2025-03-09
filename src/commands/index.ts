@@ -17,8 +17,5 @@ export const mainCommand = command({
       console.log(`dealmail v${appVersion}`);
       return;
     }
-
-    // TODO: Implement main functionality
-    console.log("Welcome to dealmail!");
   },
 });
