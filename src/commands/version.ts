@@ -1,14 +1,14 @@
-import * as fs from "fs/promises";
+import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
 
-export const getVersion = async (): Promise<string> => {
+export const getVersion = (): string => {
   try {
     const __filename = fileURLToPath(import.meta.url);
     const __dirname = path.dirname(__filename);
     const packageJsonPath = path.resolve(__dirname, "../../package.json");
 
-    const packageJsonContent = await fs.readFile(packageJsonPath, "utf-8");
+    const packageJsonContent = fs.readFileSync(packageJsonPath, "utf-8");
     const packageJson = JSON.parse(packageJsonContent);
     return packageJson.version;
   } catch (error) {
