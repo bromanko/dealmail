@@ -1,15 +1,5 @@
-import { run, subcommands } from "cmd-ts";
-import { mainCommand } from "./commands/main.js";
-import { versionCommand } from "./commands/version.js";
+import { run } from "cmd-ts";
+import { mainCommand } from "./commands/index.js";
 
-// Application with subcommands
-const app = subcommands({
-  name: "dealmail",
-  description: "Extract deal information from emails",
-  cmds: {
-    main: mainCommand,
-    version: versionCommand,
-  },
-});
-
-run(app, process.argv.slice(2));
+// Run the main command directly
+run(mainCommand, process.argv.slice(2));

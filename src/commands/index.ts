@@ -20,7 +20,7 @@ const getVersion = async (): Promise<string> => {
 };
 
 export const mainCommand = command({
-  name: "main",
+  name: "dealmail",
   description: "Extract deal information from emails",
   args: {
     version: flag({
