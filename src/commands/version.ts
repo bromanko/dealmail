@@ -1,9 +1,8 @@
-import { command } from "cmd-ts";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { fileURLToPath } from "url";
 
-const getVersion = async (): Promise<string> => {
+export const getVersion = async (): Promise<string> => {
   try {
     const __filename = fileURLToPath(import.meta.url);
     const __dirname = path.dirname(__filename);
@@ -17,13 +16,3 @@ const getVersion = async (): Promise<string> => {
     return "unknown";
   }
 };
-
-export const versionCommand = command({
-  name: "version",
-  description: "Display the application version",
-  args: {},
-  handler: async () => {
-    const appVersion = await getVersion();
-    console.log(`dealmail v${appVersion}`);
-  },
-});
