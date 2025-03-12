@@ -444,53 +444,46 @@ export const getEmailsCommand = command({
         }),
       );
 
-    // Main program flow using fp-ts
+    // Main program flow using fp-ts with flattened structure
     const program = pipe(
       initializeClient,
-      TE.chain((client) =>
+      TE.chain(client => 
         pipe(
           getAccountId(client),
-          TE.chain((accountId) =>
-            pipe(
-              getMailboxes(client, accountId),
-              TE.chain((mailboxes) =>
-                pipe(
-                  findInbox(mailboxes),
-                  TE.chain((inbox) =>
-                    pipe(
-                      getEmails(client, accountId, inbox.id, emailLimit),
-                      TE.chain((emailsResponse) =>
-                        pipe(
-                          getEmailDetails(
-                            client,
-                            accountId,
-                            emailsResponse.ids || [],
-                          ),
-                          TE.chain((emailsData) =>
-                            pipe(
-                              processEmails(
-                                emailsData.list || [],
-                                outputDir,
-                                pretty,
-                              ),
-                              TE.map((count) => {
-                                console.log(
-                                  `Completed processing ${count} emails`,
-                                );
-                                return count;
-                              }),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
+          TE.map(accountId => ({ client, accountId }))
+        )
       ),
+      TE.chain(({ client, accountId }) => 
+        pipe(
+          getMailboxes(client, accountId),
+          TE.map(mailboxes => ({ client, accountId, mailboxes }))
+        )
+      ),
+      TE.chain(({ client, accountId, mailboxes }) =>
+        pipe(
+          findInbox(mailboxes),
+          TE.map(inbox => ({ client, accountId, inbox }))
+        )
+      ),
+      TE.chain(({ client, accountId, inbox }) =>
+        pipe(
+          getEmails(client, accountId, inbox.id, emailLimit),
+          TE.map(emailsResponse => ({ client, accountId, emailsResponse }))
+        )
+      ),
+      TE.chain(({ client, accountId, emailsResponse }) =>
+        pipe(
+          getEmailDetails(client, accountId, emailsResponse.ids || []),
+          TE.map(emailsData => ({ emailsData }))
+        )
+      ),
+      TE.chain(({ emailsData }) =>
+        processEmails(emailsData.list || [], outputDir, pretty)
+      ),
+      TE.map(count => {
+        console.log(`Completed processing ${count} emails`);
+        return count;
+      })
     );
 
     // Execute the program
