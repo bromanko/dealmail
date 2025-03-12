@@ -13,7 +13,11 @@
     "dev": "ts-node --esm src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint . --ext .ts",
+    "lint": "biome lint ./src",
+    "lint:fix": "biome lint --write ./src",
+    "format": "biome format --write ./src",
+    "check": "biome check ./src",
+    "check:fix": "biome check --write --unsafe ./src",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [
@@ -29,6 +33,7 @@
     "jmap-jam": "^0.9.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
     "@types/node": "^20.10.0",
     "eslint": "^8.53.0",
     "ts-node": "^10.9.1",

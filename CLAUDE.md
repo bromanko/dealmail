@@ -9,11 +9,15 @@
 - Test: `pnpm test`
 - Test single file: `pnpm test -- path/to/test.spec.ts`
 - Lint: `pnpm run lint`
+- Lint and fix: `pnpm run lint:fix`
+- Format code: `pnpm run format`
+- Check code: `pnpm run check`
+- Check and fix code: `pnpm run check:fix`
 - Type check: `pnpm run typecheck`
 
 ## Code Style
 - Use TypeScript strict mode with explicit types
-- Format with Prettier, configured in package.json
+- Format with Biome.js, configured in biome.json
 - Prefer async/await over Promise chains
 - Use named exports over default exports
 - PascalCase for classes/types, camelCase for variables/functions
