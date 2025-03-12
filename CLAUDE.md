@@ -22,6 +22,7 @@
 - Organize code in feature-based directories
 - Prefer functional programming patterns and using fp-ts
 - Only add comments for complex logic
+- Avoid deeply nested callback chains. Prefer using fp-ts constructs such as `pipe`, `flow`, and `chain` to compose functions.
 
 ## Project Structure
 - `src/` - Source code
