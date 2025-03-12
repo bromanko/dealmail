@@ -495,7 +495,6 @@ const saveEmailToFile = (
   email: JmapEmailData,
   index: number,
   outputDir: string,
-  pretty: boolean,
 ): TE.TaskEither<GetEmailsError, string> => {
   // Generate filename with timestamp and subject
   const timestamp = new Date(email.receivedAt)
@@ -677,7 +676,6 @@ const saveEmailToFile = (
 const processEmails = (
   emails: ReadonlyArray<JmapEmailData>,
   outputDir: string,
-  pretty: boolean,
 ): TE.TaskEither<GetEmailsError, number> => {
   if (emails.length === 0) {
     console.log("No emails to process");
@@ -691,7 +689,7 @@ const processEmails = (
         acc,
         TE.chain((count) =>
           pipe(
-            saveEmailToFile(email, count + 1, outputDir, pretty),
+            saveEmailToFile(email, count + 1, outputDir),
             TE.map(() => count + 1),
           ),
         ),
@@ -750,12 +748,8 @@ export const getEmailsCommand = command({
       description: 'Maximum number of emails to fetch or "all" (default: 100)',
       defaultValue: () => 100,
     }),
-    pretty: flag({
-      long: "pretty",
-      description: "Deprecated - kept for compatibility",
-    }),
   },
-  handler: async ({ username, password, outputDir, limit, pretty }) => {
+  handler: async ({ username, password, outputDir, limit }) => {
     console.log("Starting email fetch process...");
     console.log(`Connecting to Fastmail as ${username}`);
     console.log(`Output directory: ${outputDir}`);
@@ -795,7 +789,7 @@ export const getEmailsCommand = command({
         ),
       ),
       TE.chain(({ emailsData }) =>
-        processEmails(emailsData.list || [], outputDir, pretty),
+        processEmails(emailsData.list || [], outputDir),
       ),
       TE.map((count) => {
         console.log(`Completed processing ${count} emails`);
