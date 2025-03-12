@@ -9,15 +9,15 @@ import { pipe } from "fp-ts/lib/function.js";
 import { JamClient } from "jmap-jam";
 
 // Define types for JMAP responses
-type MailboxRole = 
-  | "inbox" 
-  | "archive" 
-  | "drafts" 
-  | "flagged" 
-  | "important" 
-  | "junk" 
-  | "sent" 
-  | "subscribed" 
+type MailboxRole =
+  | "inbox"
+  | "archive"
+  | "drafts"
+  | "flagged"
+  | "important"
+  | "junk"
+  | "sent"
+  | "subscribed"
   | "trash"
   | "all"
   | null
@@ -68,7 +68,7 @@ type JmapEmailData = {
   to?: EmailAddress[];
   cc?: EmailAddress[];
   bcc?: EmailAddress[];
-  subject?: string;  // Actually can be undefined in API response
+  subject?: string; // Actually can be undefined in API response
   receivedAt: string;
   sentAt?: string;
   preview?: string;
@@ -88,7 +88,7 @@ type EmailData = {
   to?: EmailAddress[];
   cc?: EmailAddress[];
   bcc?: EmailAddress[];
-  subject: string;  // We ensure this is defined
+  subject: string; // We ensure this is defined
   receivedAt: string;
   sentAt?: string;
   preview?: string;
@@ -136,12 +136,12 @@ const ExistingPath = extendType(string, {
     return pipe(
       TE.tryCatch(
         () => fs.access(resolved, constants.F_OK),
-        () => ({ type: "PathNotFound", path: resolved }) as GetEmailsError
+        () => ({ type: "PathNotFound", path: resolved }) as GetEmailsError,
       ),
       TE.map(() => resolved),
       TE.getOrElse((error) => {
         throw new Error(formatError(error));
-      })
+      }),
     )();
   },
 });
@@ -151,23 +151,23 @@ const isDirectory = (path: string): TE.TaskEither<GetEmailsError, string> =>
   pipe(
     TE.tryCatch(
       () => fs.stat(path),
-      (err): GetEmailsError => ({ type: "ApiError", message: String(err) })
+      (err): GetEmailsError => ({ type: "ApiError", message: String(err) }),
     ),
     TE.chain((stats) =>
       stats.isDirectory()
         ? TE.right(path)
-        : TE.left({ type: "NotADirectory", path })
-    )
+        : TE.left({ type: "NotADirectory", path }),
+    ),
   );
 
 // Create a directory if it doesn't exist
 const createDirectoryIfNotExists = (
-  dirPath: string
+  dirPath: string,
 ): TE.TaskEither<GetEmailsError, string> =>
   pipe(
     TE.tryCatch(
       () => fs.access(dirPath),
-      () => ({ type: "PathNotFound", path: dirPath }) as GetEmailsError
+      () => ({ type: "PathNotFound", path: dirPath }) as GetEmailsError,
     ),
     TE.chain(() => isDirectory(dirPath)),
     TE.orElse(() =>
@@ -177,10 +177,10 @@ const createDirectoryIfNotExists = (
           type: "DirectoryCreationFailed",
           path: dirPath,
           message: String(err),
-        })
-      )
+        }),
+      ),
     ),
-    TE.map(() => dirPath)
+    TE.map(() => dirPath),
   );
 
 // Output directory validator
@@ -194,7 +194,7 @@ const OutputDirectory = extendType(string, {
       createDirectoryIfNotExists(resolved),
       TE.getOrElse((error) => {
         throw new Error(formatError(error));
-      })
+      }),
     )();
   },
 });
@@ -202,7 +202,7 @@ const OutputDirectory = extendType(string, {
 // Validate required string values
 const validateRequired = <T extends string>(
   fieldName: string,
-  value: T
+  value: T,
 ): E.Either<GetEmailsError, T> =>
   !value || value.trim() === ""
     ? E.left({ type: "ApiError", message: `${fieldName} is required` })
@@ -217,7 +217,7 @@ const RequiredUsername = extendType(string, {
       validateRequired("Username", value),
       E.getOrElseW((error) => {
         throw new Error(formatError(error));
-      })
+      }),
     );
   },
 });
@@ -231,20 +231,17 @@ const RequiredToken = extendType(string, {
       validateRequired("Password/token", value),
       E.getOrElseW((error) => {
         throw new Error(formatError(error));
-      })
+      }),
     );
   },
 });
 
-// Type for email limit
-type EmailLimit = number | "all";
-
-// Parse a string to EmailLimit
+// Parse a string to number (including "all" as Infinity)
 const parseEmailLimit = (
-  limitStr: string
-): E.Either<GetEmailsError, EmailLimit> => {
+  limitStr: string,
+): E.Either<GetEmailsError, number> => {
   if (limitStr.toLowerCase() === "all") {
-    return E.right("all");
+    return E.right(Number.POSITIVE_INFINITY);
   }
 
   const limit = Number.parseInt(limitStr, 10);
@@ -256,16 +253,16 @@ const parseEmailLimit = (
     : E.right(limit);
 };
 
-// Functional validation for email limit
+// Functional validation for email limit that returns a number
 const EmailLimitType = extendType(string, {
   displayName: "email-limit",
-  description: 'Number of emails to fetch or "all"',
+  description: 'Number of emails to fetch or "all" (converted to Infinity)',
   async from(limitStr) {
     return pipe(
       parseEmailLimit(limitStr),
       E.getOrElseW((error) => {
         throw new Error(formatError(error));
-      })
+      }),
     );
   },
 });
@@ -274,7 +271,7 @@ const EmailLimitType = extendType(string, {
  * Initialize JMAP client
  */
 const initializeJamClient = (
-  password: string
+  password: string,
 ): TE.TaskEither<GetEmailsError, JamClient> =>
   TE.tryCatch(
     () => {
@@ -283,20 +280,20 @@ const initializeJamClient = (
         new JamClient({
           sessionUrl: "https://api.fastmail.com/jmap/session",
           bearerToken: password,
-        })
+        }),
       );
     },
     (error): GetEmailsError => ({
       type: "ApiError",
       message: `Failed to initialize JMAP client: ${error}`,
-    })
+    }),
   );
 
 /**
  * Get primary account ID
  */
 const getAccountId = (
-  client: JamClient
+  client: JamClient,
 ): TE.TaskEither<GetEmailsError, string> =>
   TE.tryCatch(
     () => {
@@ -306,7 +303,7 @@ const getAccountId = (
     (error): GetEmailsError => ({
       type: "ApiError",
       message: `Failed to get account ID: ${error}`,
-    })
+    }),
   );
 
 /**
@@ -314,7 +311,7 @@ const getAccountId = (
  */
 const getMailboxes = (
   client: JamClient,
-  accountId: string
+  accountId: string,
 ): TE.TaskEither<GetEmailsError, ReadonlyArray<Mailbox>> =>
   TE.tryCatch(
     async () => {
@@ -331,14 +328,14 @@ const getMailboxes = (
     (error): GetEmailsError => ({
       type: "ApiError",
       message: `Failed to fetch mailboxes: ${error}`,
-    })
+    }),
   );
 
 /**
  * Find inbox in mailboxes
  */
 const findInbox = (
-  mailboxes: ReadonlyArray<Mailbox>
+  mailboxes: ReadonlyArray<Mailbox>,
 ): TE.TaskEither<GetEmailsError, Mailbox> =>
   pipe(
     O.fromNullable(mailboxes.find((box: Mailbox) => box.role === "inbox")),
@@ -346,14 +343,14 @@ const findInbox = (
       (): GetEmailsError => ({
         type: "ApiError",
         message: "Could not find inbox folder",
-      })
+      }),
     ),
     TE.map((inbox) => {
       console.log(
-        `Found inbox: ${inbox.name} with ${inbox.totalEmails} emails`
+        `Found inbox: ${inbox.name} with ${inbox.totalEmails} emails`,
       );
       return inbox;
-    })
+    }),
   );
 
 /**
@@ -363,13 +360,13 @@ const getEmails = (
   client: JamClient,
   accountId: string,
   inboxId: string,
-  limit: number | "all"
+  limit: number,
 ): TE.TaskEither<GetEmailsError, EmailQueryResponse | NoEmailsResponse> =>
   TE.tryCatch(
     async () => {
       console.log("Fetching emails...");
-      // Convert "all" to undefined for API which expects a number or undefined
-      const apiLimit = limit === "all" ? undefined : limit;
+      // Convert Infinity to undefined for API which expects a number or undefined
+      const apiLimit = Number.isFinite(limit) ? limit : undefined;
       const [emailsResponse] = await client.request([
         "Email/query",
         {
@@ -394,7 +391,7 @@ const getEmails = (
     (error): GetEmailsError => ({
       type: "ApiError",
       message: `Failed to query emails: ${error}`,
-    })
+    }),
   );
 
 /**
@@ -403,7 +400,7 @@ const getEmails = (
 const getEmailDetails = (
   client: JamClient,
   accountId: string,
-  emailIds: string[]
+  emailIds: string[],
 ): TE.TaskEither<GetEmailsError, EmailsDataResponse> =>
   TE.tryCatch(
     async () => {
@@ -442,7 +439,7 @@ const getEmailDetails = (
     (error): GetEmailsError => ({
       type: "ApiError",
       message: `Failed to get email details: ${error}`,
-    })
+    }),
   );
 
 /**
@@ -451,7 +448,7 @@ const getEmailDetails = (
 const processEmails = (
   emails: ReadonlyArray<JmapEmailData>,
   outputDir: string,
-  pretty: boolean
+  pretty: boolean,
 ): TE.TaskEither<GetEmailsError, number> =>
   TE.tryCatch(
     async () => {
@@ -499,11 +496,11 @@ const processEmails = (
         await fs.writeFile(
           filePath,
           JSON.stringify(emailData, null, pretty ? 2 : 0),
-          "utf8"
+          "utf8",
         );
 
         console.log(
-          `Saved email ${emailCount}: ${email.subject || "No Subject"}`
+          `Saved email ${emailCount}: ${email.subject || "No Subject"}`,
         );
       }
 
@@ -512,7 +509,7 @@ const processEmails = (
     (error): GetEmailsError => ({
       type: "ApiError",
       message: `Failed to process emails: ${error}`,
-    })
+    }),
   );
 
 /**
@@ -557,9 +554,6 @@ export const getEmailsCommand = command({
     }),
   },
   handler: async ({ username, password, outputDir, limit, pretty }) => {
-    // Convert "all" to Infinity for use in the API
-    const emailLimit = limit === "all" ? Number.POSITIVE_INFINITY : limit;
-
     console.log("Starting email fetch process...");
     console.log(`Connecting to Fastmail as ${username}`);
     console.log(`Output directory: ${outputDir}`);
@@ -571,40 +565,40 @@ export const getEmailsCommand = command({
       TE.chain((client) =>
         pipe(
           getAccountId(client),
-          TE.map((accountId) => ({ client, accountId }))
-        )
+          TE.map((accountId) => ({ client, accountId })),
+        ),
       ),
       TE.chain(({ client, accountId }) =>
         pipe(
           getMailboxes(client, accountId),
-          TE.map((mailboxes) => ({ client, accountId, mailboxes }))
-        )
+          TE.map((mailboxes) => ({ client, accountId, mailboxes })),
+        ),
       ),
       TE.chain(({ client, accountId, mailboxes }) =>
         pipe(
           findInbox(mailboxes),
-          TE.map((inbox) => ({ client, accountId, inbox }))
-        )
+          TE.map((inbox) => ({ client, accountId, inbox })),
+        ),
       ),
       TE.chain(({ client, accountId, inbox }) =>
         pipe(
-          getEmails(client, accountId, inbox.id, emailLimit),
-          TE.map((emailsResponse) => ({ client, accountId, emailsResponse }))
-        )
+          getEmails(client, accountId, inbox.id, limit),
+          TE.map((emailsResponse) => ({ client, accountId, emailsResponse })),
+        ),
       ),
       TE.chain(({ client, accountId, emailsResponse }) =>
         pipe(
           getEmailDetails(client, accountId, emailsResponse.ids || []),
-          TE.map((emailsData) => ({ emailsData }))
-        )
+          TE.map((emailsData) => ({ emailsData })),
+        ),
       ),
       TE.chain(({ emailsData }) =>
-        processEmails(emailsData.list || [], outputDir, pretty)
+        processEmails(emailsData.list || [], outputDir, pretty),
       ),
       TE.map((count) => {
         console.log(`Completed processing ${count} emails`);
         return count;
-      })
+      }),
     );
 
     // Execute the program
@@ -619,8 +613,8 @@ export const getEmailsCommand = command({
         (_) => {
           console.log("Email fetch process complete!");
           return 0; // Success exit code
-        }
-      )
+        },
+      ),
     )();
   },
 });
