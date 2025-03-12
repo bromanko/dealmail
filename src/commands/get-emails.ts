@@ -7,6 +7,7 @@ import * as O from "fp-ts/lib/Option.js";
 import * as TE from "fp-ts/lib/TaskEither.js";
 import { pipe } from "fp-ts/lib/function.js";
 import { JamClient } from "jmap-jam";
+import puppeteer from "puppeteer";
 
 // Define types for JMAP responses
 type MailboxRole =
@@ -104,11 +105,12 @@ type EmailsDataResponse = {
 };
 
 type GetEmailsError =
-  | { type: "PathNotFound"; path: string }
-  | { type: "NotADirectory"; path: string }
-  | { type: "DirectoryCreationFailed"; path: string; message: string }
-  | { type: "ApiError"; message: string }
-  | { type: "FileWriteError"; path: string; message: string };
+  | { type: "PathNotFound"; path: string; stack?: string }
+  | { type: "NotADirectory"; path: string; stack?: string }
+  | { type: "DirectoryCreationFailed"; path: string; message: string; stack?: string }
+  | { type: "ApiError"; message: string; stack?: string }
+  | { type: "FileWriteError"; path: string; message: string; stack?: string }
+  | { type: "ScreenshotError"; message: string; stack?: string };
 
 const formatError = (error: GetEmailsError): string => {
   switch (error.type) {
@@ -122,6 +124,8 @@ const formatError = (error: GetEmailsError): string => {
       return `API error: ${error.message}`;
     case "FileWriteError":
       return `Failed to write file ${error.path}: ${error.message}`;
+    case "ScreenshotError":
+      return `Failed to generate screenshot: ${error.message}`;
   }
 };
 
@@ -283,10 +287,18 @@ const initializeJamClient = (
         }),
       );
     },
-    (error): GetEmailsError => ({
-      type: "ApiError",
-      message: `Failed to initialize JMAP client: ${error}`,
-    }),
+    (error): GetEmailsError => {
+      const errorObj: GetEmailsError = {
+        type: "ApiError",
+        message: `Failed to initialize JMAP client: ${error}`,
+      };
+      
+      if (error instanceof Error && error.stack) {
+        errorObj.stack = error.stack;
+      }
+      
+      return errorObj;
+    },
   );
 
 /**
@@ -455,7 +467,7 @@ const getEmailDetails = (
   );
 };
 
-// Convert a single email to a file
+// Convert a single email to a screenshot
 const saveEmailToFile = (
   email: JmapEmailData,
   index: number,
@@ -469,44 +481,142 @@ const saveEmailToFile = (
   const safeSubject = (email.subject || "No Subject")
     .replace(/[^a-z0-9]/gi, "_")
     .substring(0, 30);
-  const fileName = `${index}-${timestamp}-${safeSubject}.json`;
+  const fileName = `${index}-${timestamp}-${safeSubject}.png`;
   const filePath = path.join(outputDir, fileName);
 
-  // Email data to save
-  const emailData = {
-    id: email.id,
-    threadId: email.threadId,
-    mailboxIds: email.mailboxIds,
-    from: email.from,
-    to: email.to,
-    cc: email.cc,
-    bcc: email.bcc,
-    subject: email.subject,
-    receivedAt: email.receivedAt,
-    sentAt: email.sentAt,
-    preview: email.preview,
-    hasAttachment: email.hasAttachment,
-    bodyValues: email.bodyValues,
-    textBody: email.textBody,
-    htmlBody: email.htmlBody,
+  // Extract HTML content from email
+  const getHtmlContent = (): string => {
+    // Look for HTML body content in bodyValues
+    if (email.htmlBody && email.htmlBody.length > 0 && email.bodyValues) {
+      for (const part of email.htmlBody) {
+        if (part.partId && email.bodyValues[part.partId]) {
+          return email.bodyValues[part.partId].value;
+        }
+      }
+    }
+    
+    // Fallback to creating HTML from text body if HTML isn't available
+    if (email.textBody && email.textBody.length > 0 && email.bodyValues) {
+      for (const part of email.textBody) {
+        if (part.partId && email.bodyValues[part.partId]) {
+          const text = email.bodyValues[part.partId].value;
+          // Convert plain text to simple HTML
+          return `<!DOCTYPE html>
+          <html>
+            <head>
+              <meta charset="utf-8">
+              <title>${email.subject || "No Subject"}</title>
+            </head>
+            <body>
+              <pre style="font-family: sans-serif; white-space: pre-wrap;">${text}</pre>
+            </body>
+          </html>`;
+        }
+      }
+    }
+    
+    // Final fallback for when no content is available
+    return `<!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <title>${email.subject || "No Subject"}</title>
+      </head>
+      <body>
+        <h1>${email.subject || "No Subject"}</h1>
+        <p>From: ${email.from ? email.from.map(addr => addr.name || addr.email).join(", ") : "Unknown"}</p>
+        <p>Date: ${new Date(email.receivedAt).toLocaleString()}</p>
+        <p>No content available for this email.</p>
+      </body>
+    </html>`;
+  };
+
+  // Generate full HTML with proper styling and metadata
+  const generateFullHtml = (): string => {
+    const htmlContent = getHtmlContent();
+    
+    // If the content already has HTML structure, return it as is
+    if (htmlContent.trim().toLowerCase().startsWith("<!doctype") || 
+        htmlContent.trim().toLowerCase().startsWith("<html")) {
+      return htmlContent;
+    }
+    
+    // Otherwise wrap it in proper HTML structure
+    return `<!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <title>${email.subject || "No Subject"}</title>
+        <style>
+          body { font-family: Arial, sans-serif; margin: 20px; }
+          .email-metadata { background: #f5f5f5; padding: 10px; margin-bottom: 20px; border-radius: 5px; }
+          .email-content { padding: 10px; }
+        </style>
+      </head>
+      <body>
+        <div class="email-metadata">
+          <h2>${email.subject || "No Subject"}</h2>
+          <p><strong>From:</strong> ${email.from ? email.from.map(addr => addr.name || addr.email).join(", ") : "Unknown"}</p>
+          <p><strong>To:</strong> ${email.to ? email.to.map(addr => addr.name || addr.email).join(", ") : "Unknown"}</p>
+          ${email.cc && email.cc.length > 0 ? `<p><strong>CC:</strong> ${email.cc.map(addr => addr.name || addr.email).join(", ")}</p>` : ""}
+          <p><strong>Date:</strong> ${new Date(email.receivedAt).toLocaleString()}</p>
+        </div>
+        <div class="email-content">
+          ${htmlContent}
+        </div>
+      </body>
+    </html>`;
   };
 
   return pipe(
     TE.tryCatch(
-      () => fs.writeFile(
-        filePath,
-        JSON.stringify(emailData, null, pretty ? 2 : 0),
-        "utf8"
-      ),
-      (error): GetEmailsError => ({
-        type: "FileWriteError",
-        path: filePath,
-        message: String(error),
-      })
+      async () => {
+        const html = generateFullHtml();
+        
+        // Launch puppeteer browser
+        const browser = await puppeteer.launch({
+          headless: true,
+        });
+        
+        try {
+          const page = await browser.newPage();
+          
+          // Set content and wait for it to load
+          await page.setContent(html, { waitUntil: "networkidle0" });
+          
+          // Make sure to size the viewport appropriately
+          await page.setViewport({ width: 1200, height: 800 });
+          
+          // Take screenshot of the full page
+          await page.screenshot({
+            path: filePath,
+            fullPage: true,
+            type: "png",
+          });
+          
+          return filePath;
+        } finally {
+          await browser.close();
+        }
+      },
+      (error): GetEmailsError => {
+        // Capture stack trace for better debugging
+        const errorObj: GetEmailsError & { stack?: string } = {
+          type: "ScreenshotError",
+          message: String(error),
+        };
+        
+        // Keep the stack trace if it exists
+        if (error instanceof Error && error.stack) {
+          errorObj.stack = error.stack;
+        }
+        
+        return errorObj;
+      }
     ),
-    TE.map(() => {
-      console.log(`Saved email ${index}: ${email.subject || "No Subject"}`);
-      return filePath;
+    TE.map((path) => {
+      console.log(`Saved screenshot ${index}: ${email.subject || "No Subject"}`);
+      return path;
     })
   );
 };
@@ -542,12 +652,12 @@ const processEmails = (
   return pipe(
     processAllEmails,
     TE.mapLeft((error): GetEmailsError => {
-      if (error.type === "FileWriteError") {
+      if (error.type) {
         return error;
       }
       return {
         type: "ApiError",
-        message: `Failed to process emails: ${error}`,
+        message: `Failed to process emails: ${JSON.stringify(error, null, 2)}`,
       };
     })
   );
@@ -558,7 +668,7 @@ const processEmails = (
  */
 export const getEmailsCommand = command({
   name: "get-emails",
-  description: "Fetch emails from Fastmail using JMAP API",
+  description: "Fetch emails from Fastmail and save as PNG screenshots",
   args: {
     username: option({
       type: RequiredUsername,
@@ -579,7 +689,7 @@ export const getEmailsCommand = command({
       type: OutputDirectory,
       long: "output",
       short: "o",
-      description: "Directory to save email data (default: ./emails)",
+      description: "Directory to save email screenshots (default: ./emails)",
       defaultValue: () => "./emails",
     }),
     limit: option({
@@ -591,7 +701,7 @@ export const getEmailsCommand = command({
     }),
     pretty: flag({
       long: "pretty",
-      description: "Pretty print JSON output",
+      description: "Deprecated - kept for compatibility",
     }),
   },
   handler: async ({ username, password, outputDir, limit, pretty }) => {
@@ -647,7 +757,19 @@ export const getEmailsCommand = command({
       program,
       TE.match(
         (error) => {
+          console.error("ERROR DETAILS:");
           console.error(formatError(error));
+          if (error.type === "ScreenshotError" || error.type === "ApiError") {
+            console.error("Full error object:");
+            console.error(JSON.stringify(error, null, 2));
+            console.error("Stack trace if available:");
+            if (error.stack) {
+              console.error(error.stack);
+            } else if (error.message && error.message.includes("Error:")) {
+              // Try to extract stack trace from error message
+              console.error(error.message);
+            }
+          }
           console.log("Email fetch process failed");
           return 1; // Error exit code
         },
