@@ -36,7 +36,6 @@ type EmailAddress = {
   email: string;
 };
 
-
 // Response type that always includes accountId and an ids array (possibly empty)
 type EmailQueryResponse = {
   accountId: string;
@@ -77,26 +76,6 @@ type JmapEmailData = {
   htmlBody?: EmailBodyPart[];
 };
 
-// Our stricter type for processing
-type EmailData = {
-  id: string;
-  threadId: string;
-  mailboxIds: Record<string, boolean>;
-  keywords?: Record<string, boolean>;
-  from?: EmailAddress[];
-  to?: EmailAddress[];
-  cc?: EmailAddress[];
-  bcc?: EmailAddress[];
-  subject: string; // We ensure this is defined
-  receivedAt: string;
-  sentAt?: string;
-  preview?: string;
-  hasAttachment?: boolean;
-  bodyValues?: Record<string, { value: string; isTruncated?: boolean }>;
-  textBody?: EmailBodyPart[];
-  htmlBody?: EmailBodyPart[];
-};
-
 type EmailsDataResponse = {
   list?: readonly JmapEmailData[];
   accountId: string;
@@ -104,30 +83,83 @@ type EmailsDataResponse = {
   notFound?: readonly string[];
 };
 
-type GetEmailsError =
-  | { type: "PathNotFound"; path: string; stack?: string }
-  | { type: "NotADirectory"; path: string; stack?: string }
-  | { type: "DirectoryCreationFailed"; path: string; message: string; stack?: string }
-  | { type: "ApiError"; message: string; stack?: string }
-  | { type: "FileWriteError"; path: string; message: string; stack?: string }
-  | { type: "ScreenshotError"; message: string; stack?: string };
-
-const formatError = (error: GetEmailsError): string => {
-  switch (error.type) {
-    case "PathNotFound":
-      return `Path doesn't exist: ${error.path}`;
-    case "NotADirectory":
-      return `Path exists but is not a directory: ${error.path}`;
-    case "DirectoryCreationFailed":
-      return `Failed to create directory ${error.path}: ${error.message}`;
-    case "ApiError":
-      return `API error: ${error.message}`;
-    case "FileWriteError":
-      return `Failed to write file ${error.path}: ${error.message}`;
-    case "ScreenshotError":
-      return `Failed to generate screenshot: ${error.message}`;
+class DealMailError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = this.constructor.name;
+    // Ensure proper prototype chain for instanceof checks
+    Object.setPrototypeOf(this, DealMailError.prototype);
   }
-};
+}
+
+class PathNotFoundError extends DealMailError {
+  path: string;
+
+  constructor(path: string) {
+    super(`Path doesn't exist: ${path}`);
+    this.path = path;
+    Object.setPrototypeOf(this, PathNotFoundError.prototype);
+  }
+}
+
+class NotADirectoryError extends DealMailError {
+  path: string;
+
+  constructor(path: string) {
+    super(`Path exists but is not a directory: ${path}`);
+    this.path = path;
+    Object.setPrototypeOf(this, NotADirectoryError.prototype);
+  }
+}
+
+class DirectoryCreationFailedError extends DealMailError {
+  path: string;
+  cause?: Error;
+
+  constructor(path: string, cause?: Error) {
+    super(
+      `Failed to create directory ${path}${cause ? `: ${cause.message}` : ""}`,
+    );
+    this.path = path;
+    this.cause = cause;
+    Object.setPrototypeOf(this, DirectoryCreationFailedError.prototype);
+  }
+}
+
+class ApiError extends DealMailError {
+  cause?: Error;
+
+  constructor(message: string, cause?: Error) {
+    super(`API error: ${message}`);
+    this.cause = cause;
+    Object.setPrototypeOf(this, ApiError.prototype);
+  }
+}
+
+class FileWriteError extends DealMailError {
+  path: string;
+  cause?: Error;
+
+  constructor(path: string, cause?: Error) {
+    super(`Failed to write file ${path}${cause ? `: ${cause.message}` : ""}`);
+    this.path = path;
+    this.cause = cause;
+    Object.setPrototypeOf(this, FileWriteError.prototype);
+  }
+}
+
+class ScreenshotError extends DealMailError {
+  cause?: Error;
+
+  constructor(message: string, cause?: Error) {
+    super(`Failed to generate screenshot: ${message}`);
+    this.cause = cause;
+    Object.setPrototypeOf(this, ScreenshotError.prototype);
+  }
+}
+
+// Type alias for all possible error types
+type GetEmailsError = DealMailError;
 
 const ExistingPath = extendType(string, {
   displayName: "path",
@@ -138,48 +170,51 @@ const ExistingPath = extendType(string, {
     return pipe(
       TE.tryCatch(
         () => fs.access(resolved, constants.F_OK),
-        () => ({ type: "PathNotFound", path: resolved }) as GetEmailsError,
+        () => new PathNotFoundError(resolved),
       ),
       TE.map(() => resolved),
       TE.getOrElse((error) => {
-        throw new Error(formatError(error));
+        throw error;
       }),
     )();
   },
 });
 
-// Check if a path is a directory
 const isDirectory = (path: string): TE.TaskEither<GetEmailsError, string> =>
   pipe(
     TE.tryCatch(
       () => fs.stat(path),
-      (err): GetEmailsError => ({ type: "ApiError", message: String(err) }),
+      (err) =>
+        new ApiError(
+          String(err),
+          err instanceof Error ? err : undefined,
+        ) as GetEmailsError,
     ),
-    TE.chain((stats) =>
-      stats.isDirectory()
-        ? TE.right(path)
-        : TE.left({ type: "NotADirectory", path }),
-    ),
+    TE.chain((stats) => {
+      if (stats.isDirectory()) {
+        return TE.right(path);
+      }
+      return TE.left<GetEmailsError, string>(new NotADirectoryError(path));
+    }),
   );
 
-// Create a directory if it doesn't exist
 const createDirectoryIfNotExists = (
   dirPath: string,
 ): TE.TaskEither<GetEmailsError, string> =>
   pipe(
     TE.tryCatch(
       () => fs.access(dirPath),
-      () => ({ type: "PathNotFound", path: dirPath }) as GetEmailsError,
+      () => new PathNotFoundError(dirPath),
     ),
     TE.chain(() => isDirectory(dirPath)),
     TE.orElse(() =>
       TE.tryCatch(
         () => fs.mkdir(dirPath, { recursive: true }),
-        (err): GetEmailsError => ({
-          type: "DirectoryCreationFailed",
-          path: dirPath,
-          message: String(err),
-        }),
+        (err) =>
+          new DirectoryCreationFailedError(
+            dirPath,
+            err instanceof Error ? err : undefined,
+          ),
       ),
     ),
     TE.map(() => dirPath),
@@ -190,27 +225,25 @@ const OutputDirectory = extendType(string, {
   displayName: "output-dir",
   description: "Directory to save output (will be created if it doesn't exist)",
   async from(dirPath) {
-    const resolved = path.resolve(dirPath);
-
     return pipe(
-      createDirectoryIfNotExists(resolved),
+      dirPath,
+      path.resolve,
+      createDirectoryIfNotExists,
       TE.getOrElse((error) => {
-        throw new Error(formatError(error));
+        throw error;
       }),
     )();
   },
 });
 
-// Validate required string values
 const validateRequired = <T extends string>(
   fieldName: string,
   value: T,
 ): E.Either<GetEmailsError, T> =>
   !value || value.trim() === ""
-    ? E.left({ type: "ApiError", message: `${fieldName} is required` })
+    ? E.left(new ApiError(`${fieldName} is required`))
     : E.right(value);
 
-// Username validator
 const RequiredUsername = extendType(string, {
   displayName: "username",
   description: "Fastmail username",
@@ -218,7 +251,7 @@ const RequiredUsername = extendType(string, {
     return pipe(
       validateRequired("Username", value),
       E.getOrElseW((error) => {
-        throw new Error(formatError(error));
+        throw error;
       }),
     );
   },
@@ -232,32 +265,27 @@ const RequiredToken = extendType(string, {
     return pipe(
       validateRequired("Password/token", value),
       E.getOrElseW((error) => {
-        throw new Error(formatError(error));
+        throw error;
       }),
     );
   },
 });
 
-// Parse a string to number (including "all" as Infinity)
-const parseEmailLimit = (
-  limitStr: string,
-): E.Either<GetEmailsError, number> => 
+const parseEmailLimit = (limitStr: string): E.Either<GetEmailsError, number> =>
   pipe(
     limitStr.toLowerCase() === "all"
       ? E.right(Number.POSITIVE_INFINITY)
-      : pipe(
-          Number.parseInt(limitStr, 10),
-          (limit) => 
-            Number.isNaN(limit) || limit <= 0
-              ? E.left<GetEmailsError, number>({
-                  type: "ApiError",
-                  message: `Invalid limit: ${limitStr}. Must be a positive number or "all"`,
-                })
-              : E.right(limit)
-        )
+      : pipe(Number.parseInt(limitStr, 10), (limit) =>
+          Number.isNaN(limit) || limit <= 0
+            ? E.left<GetEmailsError, number>(
+                new ApiError(
+                  `Invalid limit: ${limitStr}. Must be a positive number or "all"`,
+                ),
+              )
+            : E.right(limit),
+        ),
   );
 
-// Functional validation for email limit that returns a number
 const EmailLimitType = extendType(string, {
   displayName: "email-limit",
   description: 'Number of emails to fetch or "all" (converted to Infinity)',
@@ -265,7 +293,7 @@ const EmailLimitType = extendType(string, {
     return pipe(
       parseEmailLimit(limitStr),
       E.getOrElseW((error) => {
-        throw new Error(formatError(error));
+        throw error;
       }),
     );
   },
@@ -287,17 +315,11 @@ const initializeJamClient = (
         }),
       );
     },
-    (error): GetEmailsError => {
-      const errorObj: GetEmailsError = {
-        type: "ApiError",
-        message: `Failed to initialize JMAP client: ${error}`,
-      };
-      
-      if (error instanceof Error && error.stack) {
-        errorObj.stack = error.stack;
-      }
-      
-      return errorObj;
+    (error) => {
+      return new ApiError(
+        `Failed to initialize JMAP client: ${error}`,
+        error instanceof Error ? error : undefined,
+      );
     },
   );
 
@@ -312,10 +334,11 @@ const getAccountId = (
       console.log("Getting account ID...");
       return client.getPrimaryAccount();
     },
-    (error): GetEmailsError => ({
-      type: "ApiError",
-      message: `Failed to get account ID: ${error}`,
-    }),
+    (error) =>
+      new ApiError(
+        `Failed to get account ID: ${error}`,
+        error instanceof Error ? error : undefined,
+      ),
   );
 
 /**
@@ -337,10 +360,11 @@ const getMailboxes = (
       ]);
       return mailboxesResponse.list || [];
     },
-    (error): GetEmailsError => ({
-      type: "ApiError",
-      message: `Failed to fetch mailboxes: ${error}`,
-    }),
+    (error) =>
+      new ApiError(
+        `Failed to fetch mailboxes: ${error}`,
+        error instanceof Error ? error : undefined,
+      ),
   );
 
 /**
@@ -351,12 +375,7 @@ const findInbox = (
 ): TE.TaskEither<GetEmailsError, Mailbox> =>
   pipe(
     O.fromNullable(mailboxes.find((box: Mailbox) => box.role === "inbox")),
-    TE.fromOption(
-      (): GetEmailsError => ({
-        type: "ApiError",
-        message: "Could not find inbox folder",
-      }),
-    ),
+    TE.fromOption(() => new ApiError("Could not find inbox folder")),
     TE.map((inbox) => {
       console.log(
         `Found inbox: ${inbox.name} with ${inbox.totalEmails} emails`,
@@ -375,45 +394,47 @@ const getEmails = (
   limit: number,
 ): TE.TaskEither<GetEmailsError, EmailQueryResponse> => {
   console.log("Fetching emails...");
-  
+
   // Convert Infinity to undefined for API which expects a number or undefined
   const apiLimit = Number.isFinite(limit) ? limit : undefined;
-  
+
   return pipe(
     TE.tryCatch(
-      () => client.request([
-        "Email/query",
-        {
-          accountId,
-          filter: {
-            inMailbox: inboxId,
+      () =>
+        client.request([
+          "Email/query",
+          {
+            accountId,
+            filter: {
+              inMailbox: inboxId,
+            },
+            sort: [{ property: "receivedAt", isAscending: false }],
+            limit: apiLimit,
+            calculateTotal: true,
           },
-          sort: [{ property: "receivedAt", isAscending: false }],
-          limit: apiLimit,
-          calculateTotal: true,
-        },
-      ]),
-      (error): GetEmailsError => ({
-        type: "ApiError",
-        message: `Failed to query emails: ${error}`,
-      })
+        ]),
+      (error) =>
+        new ApiError(
+          `Failed to query emails: ${error}`,
+          error instanceof Error ? error : undefined,
+        ),
     ),
     TE.map(([emailsResponse]) => {
       // Normalize the response to ensure it has the required structure
       const normalizedResponse: EmailQueryResponse = {
         ...emailsResponse,
         accountId,
-        ids: emailsResponse.ids || [] // Ensure the ids property is always an array
+        ids: emailsResponse.ids || [], // Ensure the ids property is always an array
       };
-      
+
       if (!normalizedResponse.ids.length) {
         console.log("No emails found in inbox");
       } else {
         console.log(`Found ${normalizedResponse.ids.length} emails`);
       }
-      
+
       return normalizedResponse;
-    })
+    }),
   );
 };
 
@@ -431,39 +452,41 @@ const getEmailDetails = (
 
   return pipe(
     TE.tryCatch(
-      () => client.request([
-        "Email/get",
-        {
-          accountId,
-          ids: emailIds,
-          properties: [
-            "id",
-            "threadId",
-            "mailboxIds",
-            "keywords",
-            "from",
-            "to",
-            "cc",
-            "bcc",
-            "subject",
-            "receivedAt",
-            "sentAt",
-            "preview",
-            "hasAttachment",
-            "bodyValues",
-            "textBody",
-            "htmlBody",
-          ],
-          fetchTextBodyValues: true,
-          fetchHTMLBodyValues: true,
-        },
-      ]),
-      (error): GetEmailsError => ({
-        type: "ApiError",
-        message: `Failed to get email details: ${error}`,
-      })
+      () =>
+        client.request([
+          "Email/get",
+          {
+            accountId,
+            ids: emailIds,
+            properties: [
+              "id",
+              "threadId",
+              "mailboxIds",
+              "keywords",
+              "from",
+              "to",
+              "cc",
+              "bcc",
+              "subject",
+              "receivedAt",
+              "sentAt",
+              "preview",
+              "hasAttachment",
+              "bodyValues",
+              "textBody",
+              "htmlBody",
+            ],
+            fetchTextBodyValues: true,
+            fetchHTMLBodyValues: true,
+          },
+        ]),
+      (error) =>
+        new ApiError(
+          `Failed to get email details: ${error}`,
+          error instanceof Error ? error : undefined,
+        ),
     ),
-    TE.map(([emailsData]) => emailsData)
+    TE.map(([emailsData]) => emailsData),
   );
 };
 
@@ -472,7 +495,7 @@ const saveEmailToFile = (
   email: JmapEmailData,
   index: number,
   outputDir: string,
-  pretty: boolean
+  pretty: boolean,
 ): TE.TaskEither<GetEmailsError, string> => {
   // Generate filename with timestamp and subject
   const timestamp = new Date(email.receivedAt)
@@ -494,7 +517,7 @@ const saveEmailToFile = (
         }
       }
     }
-    
+
     // Fallback to creating HTML from text body if HTML isn't available
     if (email.textBody && email.textBody.length > 0 && email.bodyValues) {
       for (const part of email.textBody) {
@@ -514,7 +537,7 @@ const saveEmailToFile = (
         }
       }
     }
-    
+
     // Final fallback for when no content is available
     return `<!DOCTYPE html>
     <html>
@@ -524,7 +547,7 @@ const saveEmailToFile = (
       </head>
       <body>
         <h1>${email.subject || "No Subject"}</h1>
-        <p>From: ${email.from ? email.from.map(addr => addr.name || addr.email).join(", ") : "Unknown"}</p>
+        <p>From: ${email.from ? email.from.map((addr) => addr.name || addr.email).join(", ") : "Unknown"}</p>
         <p>Date: ${new Date(email.receivedAt).toLocaleString()}</p>
         <p>No content available for this email.</p>
       </body>
@@ -534,13 +557,15 @@ const saveEmailToFile = (
   // Generate full HTML with proper styling and metadata
   const generateFullHtml = (): string => {
     const htmlContent = getHtmlContent();
-    
+
     // If the content already has HTML structure, return it as is
-    if (htmlContent.trim().toLowerCase().startsWith("<!doctype") || 
-        htmlContent.trim().toLowerCase().startsWith("<html")) {
+    if (
+      htmlContent.trim().toLowerCase().startsWith("<!doctype") ||
+      htmlContent.trim().toLowerCase().startsWith("<html")
+    ) {
       return htmlContent;
     }
-    
+
     // Otherwise wrap it in proper HTML structure
     return `<!DOCTYPE html>
     <html>
@@ -556,9 +581,9 @@ const saveEmailToFile = (
       <body>
         <div class="email-metadata">
           <h2>${email.subject || "No Subject"}</h2>
-          <p><strong>From:</strong> ${email.from ? email.from.map(addr => addr.name || addr.email).join(", ") : "Unknown"}</p>
-          <p><strong>To:</strong> ${email.to ? email.to.map(addr => addr.name || addr.email).join(", ") : "Unknown"}</p>
-          ${email.cc && email.cc.length > 0 ? `<p><strong>CC:</strong> ${email.cc.map(addr => addr.name || addr.email).join(", ")}</p>` : ""}
+          <p><strong>From:</strong> ${email.from ? email.from.map((addr) => addr.name || addr.email).join(", ") : "Unknown"}</p>
+          <p><strong>To:</strong> ${email.to ? email.to.map((addr) => addr.name || addr.email).join(", ") : "Unknown"}</p>
+          ${email.cc && email.cc.length > 0 ? `<p><strong>CC:</strong> ${email.cc.map((addr) => addr.name || addr.email).join(", ")}</p>` : ""}
           <p><strong>Date:</strong> ${new Date(email.receivedAt).toLocaleString()}</p>
         </div>
         <div class="email-content">
@@ -572,52 +597,45 @@ const saveEmailToFile = (
     TE.tryCatch(
       async () => {
         const html = generateFullHtml();
-        
+
         // Launch puppeteer browser
         const browser = await puppeteer.launch({
           headless: true,
         });
-        
+
         try {
           const page = await browser.newPage();
-          
+
           // Set content and wait for it to load
           await page.setContent(html, { waitUntil: "networkidle0" });
-          
+
           // Make sure to size the viewport appropriately
           await page.setViewport({ width: 1200, height: 800 });
-          
+
           // Take screenshot of the full page
           await page.screenshot({
             path: filePath,
             fullPage: true,
             type: "png",
           });
-          
+
           return filePath;
         } finally {
           await browser.close();
         }
       },
-      (error): GetEmailsError => {
-        // Capture stack trace for better debugging
-        const errorObj: GetEmailsError & { stack?: string } = {
-          type: "ScreenshotError",
-          message: String(error),
-        };
-        
-        // Keep the stack trace if it exists
-        if (error instanceof Error && error.stack) {
-          errorObj.stack = error.stack;
-        }
-        
-        return errorObj;
-      }
+      (error) =>
+        new ScreenshotError(
+          String(error),
+          error instanceof Error ? error : undefined,
+        ),
     ),
     TE.map((path) => {
-      console.log(`Saved screenshot ${index}: ${email.subject || "No Subject"}`);
+      console.log(
+        `Saved screenshot ${index}: ${email.subject || "No Subject"}`,
+      );
       return path;
-    })
+    }),
   );
 };
 
@@ -636,30 +654,31 @@ const processEmails = (
 
   // Process each email sequentially to avoid file system race conditions
   const processAllEmails = emails.reduce(
-    (acc: TE.TaskEither<GetEmailsError, number>, email, index) => 
+    (acc: TE.TaskEither<GetEmailsError, number>, email, index) =>
       pipe(
         acc,
-        TE.chain(count => 
+        TE.chain((count) =>
           pipe(
             saveEmailToFile(email, count + 1, outputDir, pretty),
-            TE.map(() => count + 1)
-          )
-        )
+            TE.map(() => count + 1),
+          ),
+        ),
       ),
-    TE.right(0)
+    TE.right(0),
   );
 
   return pipe(
     processAllEmails,
-    TE.mapLeft((error): GetEmailsError => {
-      if (error.type) {
-        return error;
+    TE.mapLeft((error) => {
+      // Use type guard with any to avoid TypeScript error
+      if ((error as any) instanceof DealMailError) {
+        return error as DealMailError;
       }
-      return {
-        type: "ApiError",
-        message: `Failed to process emails: ${JSON.stringify(error, null, 2)}`,
-      };
-    })
+      return new ApiError(
+        `Failed to process emails: ${JSON.stringify(error, null, 2)}`,
+        error instanceof Error ? error : undefined,
+      );
+    }),
   );
 };
 
@@ -752,30 +771,19 @@ export const getEmailsCommand = command({
       }),
     );
 
-    // Execute the program
     return await pipe(
       program,
       TE.match(
         (error) => {
           console.error("ERROR DETAILS:");
-          console.error(formatError(error));
-          if (error.type === "ScreenshotError" || error.type === "ApiError") {
-            console.error("Full error object:");
-            console.error(JSON.stringify(error, null, 2));
-            console.error("Stack trace if available:");
-            if (error.stack) {
-              console.error(error.stack);
-            } else if (error.message && error.message.includes("Error:")) {
-              // Try to extract stack trace from error message
-              console.error(error.message);
-            }
-          }
+          console.error(error);
+
           console.log("Email fetch process failed");
-          return 1; // Error exit code
+          return 1;
         },
         (_) => {
           console.log("Email fetch process complete!");
-          return 0; // Success exit code
+          return 0;
         },
       ),
     )();
