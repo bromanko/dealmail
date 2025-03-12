@@ -35,17 +35,15 @@ type EmailAddress = {
   email: string;
 };
 
+
+// Response type that always includes accountId and an ids array (possibly empty)
 type EmailQueryResponse = {
   accountId: string;
-  ids?: string[];
+  ids: string[];
   total?: number;
   position?: number;
-};
-
-// Simple response for when no emails are found
-type NoEmailsResponse = {
-  ids: never[];
-  accountId: string;
+  queryState?: string;
+  canCalculateChanges?: boolean;
 };
 
 // Email body part structure from JMAP
@@ -239,19 +237,21 @@ const RequiredToken = extendType(string, {
 // Parse a string to number (including "all" as Infinity)
 const parseEmailLimit = (
   limitStr: string,
-): E.Either<GetEmailsError, number> => {
-  if (limitStr.toLowerCase() === "all") {
-    return E.right(Number.POSITIVE_INFINITY);
-  }
-
-  const limit = Number.parseInt(limitStr, 10);
-  return Number.isNaN(limit) || limit <= 0
-    ? E.left({
-        type: "ApiError",
-        message: `Invalid limit: ${limitStr}. Must be a positive number or "all"`,
-      })
-    : E.right(limit);
-};
+): E.Either<GetEmailsError, number> => 
+  pipe(
+    limitStr.toLowerCase() === "all"
+      ? E.right(Number.POSITIVE_INFINITY)
+      : pipe(
+          Number.parseInt(limitStr, 10),
+          (limit) => 
+            Number.isNaN(limit) || limit <= 0
+              ? E.left<GetEmailsError, number>({
+                  type: "ApiError",
+                  message: `Invalid limit: ${limitStr}. Must be a positive number or "all"`,
+                })
+              : E.right(limit)
+        )
+  );
 
 // Functional validation for email limit that returns a number
 const EmailLimitType = extendType(string, {
@@ -361,13 +361,15 @@ const getEmails = (
   accountId: string,
   inboxId: string,
   limit: number,
-): TE.TaskEither<GetEmailsError, EmailQueryResponse | NoEmailsResponse> =>
-  TE.tryCatch(
-    async () => {
-      console.log("Fetching emails...");
-      // Convert Infinity to undefined for API which expects a number or undefined
-      const apiLimit = Number.isFinite(limit) ? limit : undefined;
-      const [emailsResponse] = await client.request([
+): TE.TaskEither<GetEmailsError, EmailQueryResponse> => {
+  console.log("Fetching emails...");
+  
+  // Convert Infinity to undefined for API which expects a number or undefined
+  const apiLimit = Number.isFinite(limit) ? limit : undefined;
+  
+  return pipe(
+    TE.tryCatch(
+      () => client.request([
         "Email/query",
         {
           accountId,
@@ -378,21 +380,30 @@ const getEmails = (
           limit: apiLimit,
           calculateTotal: true,
         },
-      ]);
-
-      if (!emailsResponse.ids || emailsResponse.ids.length === 0) {
+      ]),
+      (error): GetEmailsError => ({
+        type: "ApiError",
+        message: `Failed to query emails: ${error}`,
+      })
+    ),
+    TE.map(([emailsResponse]) => {
+      // Normalize the response to ensure it has the required structure
+      const normalizedResponse: EmailQueryResponse = {
+        ...emailsResponse,
+        accountId,
+        ids: emailsResponse.ids || [] // Ensure the ids property is always an array
+      };
+      
+      if (!normalizedResponse.ids.length) {
         console.log("No emails found in inbox");
-        return { ids: [], accountId };
+      } else {
+        console.log(`Found ${normalizedResponse.ids.length} emails`);
       }
-
-      console.log(`Found ${emailsResponse.ids.length} emails`);
-      return emailsResponse;
-    },
-    (error): GetEmailsError => ({
-      type: "ApiError",
-      message: `Failed to query emails: ${error}`,
-    }),
+      
+      return normalizedResponse;
+    })
   );
+};
 
 /**
  * Get detailed email data
@@ -401,12 +412,14 @@ const getEmailDetails = (
   client: JamClient,
   accountId: string,
   emailIds: string[],
-): TE.TaskEither<GetEmailsError, EmailsDataResponse> =>
-  TE.tryCatch(
-    async () => {
-      if (emailIds.length === 0) return { list: [], accountId, state: "" };
+): TE.TaskEither<GetEmailsError, EmailsDataResponse> => {
+  if (emailIds.length === 0) {
+    return TE.right({ list: [], accountId, state: "" });
+  }
 
-      const [emailsData] = await client.request([
+  return pipe(
+    TE.tryCatch(
+      () => client.request([
         "Email/get",
         {
           accountId,
@@ -432,15 +445,71 @@ const getEmailDetails = (
           fetchTextBodyValues: true,
           fetchHTMLBodyValues: true,
         },
-      ]);
-
-      return emailsData;
-    },
-    (error): GetEmailsError => ({
-      type: "ApiError",
-      message: `Failed to get email details: ${error}`,
-    }),
+      ]),
+      (error): GetEmailsError => ({
+        type: "ApiError",
+        message: `Failed to get email details: ${error}`,
+      })
+    ),
+    TE.map(([emailsData]) => emailsData)
   );
+};
+
+// Convert a single email to a file
+const saveEmailToFile = (
+  email: JmapEmailData,
+  index: number,
+  outputDir: string,
+  pretty: boolean
+): TE.TaskEither<GetEmailsError, string> => {
+  // Generate filename with timestamp and subject
+  const timestamp = new Date(email.receivedAt)
+    .toISOString()
+    .replace(/[:.]/g, "-");
+  const safeSubject = (email.subject || "No Subject")
+    .replace(/[^a-z0-9]/gi, "_")
+    .substring(0, 30);
+  const fileName = `${index}-${timestamp}-${safeSubject}.json`;
+  const filePath = path.join(outputDir, fileName);
+
+  // Email data to save
+  const emailData = {
+    id: email.id,
+    threadId: email.threadId,
+    mailboxIds: email.mailboxIds,
+    from: email.from,
+    to: email.to,
+    cc: email.cc,
+    bcc: email.bcc,
+    subject: email.subject,
+    receivedAt: email.receivedAt,
+    sentAt: email.sentAt,
+    preview: email.preview,
+    hasAttachment: email.hasAttachment,
+    bodyValues: email.bodyValues,
+    textBody: email.textBody,
+    htmlBody: email.htmlBody,
+  };
+
+  return pipe(
+    TE.tryCatch(
+      () => fs.writeFile(
+        filePath,
+        JSON.stringify(emailData, null, pretty ? 2 : 0),
+        "utf8"
+      ),
+      (error): GetEmailsError => ({
+        type: "FileWriteError",
+        path: filePath,
+        message: String(error),
+      })
+    ),
+    TE.map(() => {
+      console.log(`Saved email ${index}: ${email.subject || "No Subject"}`);
+      return filePath;
+    })
+  );
+};
 
 /**
  * Process and save emails to files
@@ -449,68 +518,40 @@ const processEmails = (
   emails: ReadonlyArray<JmapEmailData>,
   outputDir: string,
   pretty: boolean,
-): TE.TaskEither<GetEmailsError, number> =>
-  TE.tryCatch(
-    async () => {
-      if (emails.length === 0) {
-        console.log("No emails to process");
-        return 0;
-      }
+): TE.TaskEither<GetEmailsError, number> => {
+  if (emails.length === 0) {
+    console.log("No emails to process");
+    return TE.right(0);
+  }
 
-      let emailCount = 0;
-
-      // Process emails sequentially to avoid file system race conditions
-      for (const email of emails) {
-        emailCount++;
-
-        // Generate filename with timestamp and subject
-        const timestamp = new Date(email.receivedAt)
-          .toISOString()
-          .replace(/[:.]/g, "-");
-        const safeSubject = (email.subject || "No Subject")
-          .replace(/[^a-z0-9]/gi, "_")
-          .substring(0, 30);
-        const fileName = `${emailCount}-${timestamp}-${safeSubject}.json`;
-        const filePath = path.join(outputDir, fileName);
-
-        // Email data to save
-        const emailData = {
-          id: email.id,
-          threadId: email.threadId,
-          mailboxIds: email.mailboxIds,
-          from: email.from,
-          to: email.to,
-          cc: email.cc,
-          bcc: email.bcc,
-          subject: email.subject,
-          receivedAt: email.receivedAt,
-          sentAt: email.sentAt,
-          preview: email.preview,
-          hasAttachment: email.hasAttachment,
-          bodyValues: email.bodyValues,
-          textBody: email.textBody,
-          htmlBody: email.htmlBody,
-        };
-
-        // Write to file
-        await fs.writeFile(
-          filePath,
-          JSON.stringify(emailData, null, pretty ? 2 : 0),
-          "utf8",
-        );
-
-        console.log(
-          `Saved email ${emailCount}: ${email.subject || "No Subject"}`,
-        );
-      }
-
-      return emailCount;
-    },
-    (error): GetEmailsError => ({
-      type: "ApiError",
-      message: `Failed to process emails: ${error}`,
-    }),
+  // Process each email sequentially to avoid file system race conditions
+  const processAllEmails = emails.reduce(
+    (acc: TE.TaskEither<GetEmailsError, number>, email, index) => 
+      pipe(
+        acc,
+        TE.chain(count => 
+          pipe(
+            saveEmailToFile(email, count + 1, outputDir, pretty),
+            TE.map(() => count + 1)
+          )
+        )
+      ),
+    TE.right(0)
   );
+
+  return pipe(
+    processAllEmails,
+    TE.mapLeft((error): GetEmailsError => {
+      if (error.type === "FileWriteError") {
+        return error;
+      }
+      return {
+        type: "ApiError",
+        message: `Failed to process emails: ${error}`,
+      };
+    })
+  );
+};
 
 /**
  * Command to fetch emails from Fastmail using JMAP API
