@@ -25,8 +25,10 @@
 - Error handling: use typed errors with meaningful messages
 - Organize code in feature-based directories
 - Prefer functional programming patterns and using fp-ts
-- ONLY add comments for complex logic. Don't add comments for simple logic.
-- Avoid deeply nested callback chains. Prefer using fp-ts constructs such as `pipe`, `flow`, and `chain` to compose functions.
+- ONLY add comments for complex logic. Don't add comments for simple logic
+- Avoid deeply nested callback chains. Prefer using fp-ts constructs such as `pipe`, `flow`, and `chain` to compose functions
+- Prefer arrow functions with implicit returns
+- Prefer functions that use a single pipe rather than mixing some imperative logic followed by a pipeline
 
 ## Project Structure
 - `src/` - Source code
