@@ -507,96 +507,128 @@ const saveEmailToFile = (
   const fileName = `${index}-${timestamp}-${safeSubject}.png`;
   const filePath = path.join(outputDir, fileName);
 
-  // Extract HTML content from email
-  const getHtmlContent = (): string => {
-    // Look for HTML body content in bodyValues
-    if (email.htmlBody && email.htmlBody.length > 0 && email.bodyValues) {
-      for (const part of email.htmlBody) {
-        if (part.partId && email.bodyValues[part.partId]) {
-          return email.bodyValues[part.partId].value;
+  // Generate HTML for email rendering based on available content
+  const generateEmailHtml = (): string => {
+    // Extract raw content (HTML or text) from email parts
+    const extractRawContent = (): { content: string, isHtml: boolean } => {
+      // Try to get HTML content first
+      if (email.htmlBody && email.htmlBody.length > 0 && email.bodyValues) {
+        for (const part of email.htmlBody) {
+          if (part.partId && email.bodyValues[part.partId]) {
+            return {
+              content: email.bodyValues[part.partId].value,
+              isHtml: true
+            };
+          }
         }
       }
-    }
-
-    // Fallback to creating HTML from text body if HTML isn't available
-    if (email.textBody && email.textBody.length > 0 && email.bodyValues) {
-      for (const part of email.textBody) {
-        if (part.partId && email.bodyValues[part.partId]) {
-          const text = email.bodyValues[part.partId].value;
-          // Convert plain text to simple HTML
-          return `<!DOCTYPE html>
-          <html>
-            <head>
-              <meta charset="utf-8">
-              <title>${email.subject || "No Subject"}</title>
-            </head>
-            <body>
-              <pre style="font-family: sans-serif; white-space: pre-wrap;">${text}</pre>
-            </body>
-          </html>`;
+      
+      // Fall back to text content if no HTML is available
+      if (email.textBody && email.textBody.length > 0 && email.bodyValues) {
+        for (const part of email.textBody) {
+          if (part.partId && email.bodyValues[part.partId]) {
+            return {
+              content: email.bodyValues[part.partId].value,
+              isHtml: false
+            };
+          }
         }
       }
+      
+      // No content found
+      return {
+        content: "",
+        isHtml: false
+      };
+    };
+    
+    // Create metadata HTML block (common across all email types)
+    const getMetadataHtml = (): string => `
+      <div class="email-metadata">
+        <h2>${email.subject || "No Subject"}</h2>
+        <p><strong>From:</strong> ${email.from ? email.from.map(addr => addr.name || addr.email).join(", ") : "Unknown"}</p>
+        <p><strong>To:</strong> ${email.to ? email.to.map(addr => addr.name || addr.email).join(", ") : "Unknown"}</p>
+        ${email.cc && email.cc.length > 0 ? `<p><strong>CC:</strong> ${email.cc.map(addr => addr.name || addr.email).join(", ")}</p>` : ""}
+        <p><strong>Date:</strong> ${new Date(email.receivedAt).toLocaleString()}</p>
+      </div>
+    `;
+    
+    // Get common styles for all templated email types
+    const commonStyles = `
+      <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .email-metadata { background: #f5f5f5; padding: 10px; margin-bottom: 20px; border-radius: 5px; }
+        .email-content { padding: 10px; }
+      </style>
+    `;
+    
+    // Get content and determine format
+    const { content, isHtml } = extractRawContent();
+    
+    // Special case: If email already contains full HTML document structure, use it directly
+    if (isHtml && (
+        content.trim().toLowerCase().startsWith("<!doctype") || 
+        content.trim().toLowerCase().startsWith("<html")
+    )) {
+      return content;
     }
-
-    // Final fallback for when no content is available
-    return `<!DOCTYPE html>
-    <html>
-      <head>
-        <meta charset="utf-8">
-        <title>${email.subject || "No Subject"}</title>
-      </head>
-      <body>
-        <h1>${email.subject || "No Subject"}</h1>
-        <p>From: ${email.from ? email.from.map((addr) => addr.name || addr.email).join(", ") : "Unknown"}</p>
-        <p>Date: ${new Date(email.receivedAt).toLocaleString()}</p>
-        <p>No content available for this email.</p>
-      </body>
-    </html>`;
-  };
-
-  // Generate full HTML with proper styling and metadata
-  const generateFullHtml = (): string => {
-    const htmlContent = getHtmlContent();
-
-    // If the content already has HTML structure, return it as is
-    if (
-      htmlContent.trim().toLowerCase().startsWith("<!doctype") ||
-      htmlContent.trim().toLowerCase().startsWith("<html")
-    ) {
-      return htmlContent;
+    
+    // Create appropriate HTML based on content type
+    if (content === "") {
+      // No content available
+      return `<!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <title>${email.subject || "No Subject"}</title>
+          ${commonStyles}
+        </head>
+        <body>
+          ${getMetadataHtml()}
+          <div class="email-content">
+            <p>No content available for this email.</p>
+          </div>
+        </body>
+      </html>`;
+    } else if (!isHtml) {
+      // Plain text content
+      return `<!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <title>${email.subject || "No Subject"}</title>
+          ${commonStyles}
+        </head>
+        <body>
+          ${getMetadataHtml()}
+          <div class="email-content">
+            <pre style="font-family: sans-serif; white-space: pre-wrap;">${content}</pre>
+          </div>
+        </body>
+      </html>`;
+    } else {
+      // HTML content (fragment)
+      return `<!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <title>${email.subject || "No Subject"}</title>
+          ${commonStyles}
+        </head>
+        <body>
+          ${getMetadataHtml()}
+          <div class="email-content">
+            ${content}
+          </div>
+        </body>
+      </html>`;
     }
-
-    // Otherwise wrap it in proper HTML structure
-    return `<!DOCTYPE html>
-    <html>
-      <head>
-        <meta charset="utf-8">
-        <title>${email.subject || "No Subject"}</title>
-        <style>
-          body { font-family: Arial, sans-serif; margin: 20px; }
-          .email-metadata { background: #f5f5f5; padding: 10px; margin-bottom: 20px; border-radius: 5px; }
-          .email-content { padding: 10px; }
-        </style>
-      </head>
-      <body>
-        <div class="email-metadata">
-          <h2>${email.subject || "No Subject"}</h2>
-          <p><strong>From:</strong> ${email.from ? email.from.map((addr) => addr.name || addr.email).join(", ") : "Unknown"}</p>
-          <p><strong>To:</strong> ${email.to ? email.to.map((addr) => addr.name || addr.email).join(", ") : "Unknown"}</p>
-          ${email.cc && email.cc.length > 0 ? `<p><strong>CC:</strong> ${email.cc.map((addr) => addr.name || addr.email).join(", ")}</p>` : ""}
-          <p><strong>Date:</strong> ${new Date(email.receivedAt).toLocaleString()}</p>
-        </div>
-        <div class="email-content">
-          ${htmlContent}
-        </div>
-      </body>
-    </html>`;
   };
 
   return pipe(
     TE.tryCatch(
       async () => {
-        const html = generateFullHtml();
+        const html = generateEmailHtml();
 
         // Launch puppeteer browser
         const browser = await puppeteer.launch({
