@@ -10,14 +10,14 @@ import * as A from "fp-ts/lib/Array.js";
 import * as O from "fp-ts/lib/Option.js";
 import { pipe } from "fp-ts/lib/function.js";
 
-type AppError =
+type GetEmailsError =
   | { type: "PathNotFound"; path: string }
   | { type: "NotADirectory"; path: string }
   | { type: "DirectoryCreationFailed"; path: string; message: string }
   | { type: "ApiError"; message: string }
   | { type: "FileWriteError"; path: string; message: string };
 
-const formatError = (error: AppError): string => {
+const formatError = (error: GetEmailsError): string => {
   switch (error.type) {
     case "PathNotFound":
       return `Path doesn't exist: ${error.path}`;
@@ -41,7 +41,7 @@ const ExistingPath = extendType(string, {
     return pipe(
       TE.tryCatch(
         () => fs.access(resolved, constants.F_OK),
-        () => ({ type: "PathNotFound", path: resolved }) as AppError,
+        () => ({ type: "PathNotFound", path: resolved }) as GetEmailsError,
       ),
       TE.map(() => resolved),
       TE.getOrElse((error) => {
@@ -52,11 +52,11 @@ const ExistingPath = extendType(string, {
 });
 
 // Check if a path is a directory
-const isDirectory = (path: string): TE.TaskEither<AppError, string> =>
+const isDirectory = (path: string): TE.TaskEither<GetEmailsError, string> =>
   pipe(
     TE.tryCatch(
       () => fs.stat(path),
-      (err): AppError => ({ type: "ApiError", message: String(err) }),
+      (err): GetEmailsError => ({ type: "ApiError", message: String(err) }),
     ),
     TE.chain((stats) =>
       stats.isDirectory()
@@ -68,17 +68,17 @@ const isDirectory = (path: string): TE.TaskEither<AppError, string> =>
 // Create a directory if it doesn't exist
 const createDirectoryIfNotExists = (
   dirPath: string,
-): TE.TaskEither<AppError, string> =>
+): TE.TaskEither<GetEmailsError, string> =>
   pipe(
     TE.tryCatch(
       () => fs.access(dirPath),
-      () => ({ type: "PathNotFound", path: dirPath }) as AppError,
+      () => ({ type: "PathNotFound", path: dirPath }) as GetEmailsError,
     ),
     TE.chain(() => isDirectory(dirPath)),
     TE.orElse(() =>
       TE.tryCatch(
         () => fs.mkdir(dirPath, { recursive: true }),
-        (err): AppError => ({
+        (err): GetEmailsError => ({
           type: "DirectoryCreationFailed",
           path: dirPath,
           message: String(err),
@@ -108,7 +108,7 @@ const OutputDirectory = extendType(string, {
 const validateRequired = <T extends string>(
   fieldName: string,
   value: T,
-): E.Either<AppError, T> =>
+): E.Either<GetEmailsError, T> =>
   !value || value.trim() === ""
     ? E.left({ type: "ApiError", message: `${fieldName} is required` })
     : E.right(value);
@@ -145,7 +145,7 @@ const RequiredToken = extendType(string, {
 type EmailLimit = number | "all";
 
 // Parse a string to EmailLimit
-const parseEmailLimit = (limitStr: string): E.Either<AppError, EmailLimit> => {
+const parseEmailLimit = (limitStr: string): E.Either<GetEmailsError, EmailLimit> => {
   if (limitStr.toLowerCase() === "all") {
     return E.right("all");
   }
@@ -172,6 +172,251 @@ const EmailLimitType = extendType(string, {
     );
   },
 });
+
+/**
+ * Initialize JMAP client
+ */
+const initializeJamClient = (
+  password: string
+): TE.TaskEither<GetEmailsError, JamClient> => 
+  TE.tryCatch(
+    () => {
+      console.log("Initializing JMAP client...");
+      return Promise.resolve(
+        new JamClient({
+          sessionUrl: "https://api.fastmail.com/jmap/session",
+          bearerToken: password,
+        }),
+      );
+    },
+    (error): GetEmailsError => ({
+      type: "ApiError",
+      message: `Failed to initialize JMAP client: ${error}`,
+    }),
+  );
+
+/**
+ * Get primary account ID
+ */
+const getAccountId = (
+  client: JamClient
+): TE.TaskEither<GetEmailsError, string> =>
+  TE.tryCatch(
+    () => {
+      console.log("Getting account ID...");
+      return client.getPrimaryAccount();
+    },
+    (error): GetEmailsError => ({
+      type: "ApiError",
+      message: `Failed to get account ID: ${error}`,
+    }),
+  );
+
+/**
+ * Get mailboxes (folders)
+ */
+const getMailboxes = (
+  client: JamClient, 
+  accountId: string
+): TE.TaskEither<GetEmailsError, ReadonlyArray<any>> =>
+  TE.tryCatch(
+    async () => {
+      console.log("Fetching mailboxes...");
+      const [mailboxesResponse] = await client.request([
+        "Mailbox/get",
+        {
+          accountId,
+          properties: ["id", "name", "role", "totalEmails"],
+        },
+      ]);
+      return mailboxesResponse.list || [];
+    },
+    (error): GetEmailsError => ({
+      type: "ApiError",
+      message: `Failed to fetch mailboxes: ${error}`,
+    }),
+  );
+
+/**
+ * Find inbox in mailboxes
+ */
+const findInbox = (
+  mailboxes: ReadonlyArray<any>
+): TE.TaskEither<GetEmailsError, any> =>
+  pipe(
+    O.fromNullable(mailboxes.find((box: any) => box.role === "inbox")),
+    TE.fromOption(
+      (): GetEmailsError => ({
+        type: "ApiError",
+        message: "Could not find inbox folder",
+      }),
+    ),
+    TE.map((inbox) => {
+      console.log(
+        `Found inbox: ${inbox.name} with ${inbox.totalEmails} emails`,
+      );
+      return inbox;
+    }),
+  );
+
+/**
+ * Get emails from inbox
+ */
+const getEmails = (
+  client: JamClient,
+  accountId: string,
+  inboxId: string,
+  limit: number | "all",
+): TE.TaskEither<GetEmailsError, any> =>
+  TE.tryCatch(
+    async () => {
+      console.log("Fetching emails...");
+      // Convert "all" to undefined for API which expects a number or undefined
+      const apiLimit = limit === "all" ? undefined : limit;
+      const [emailsResponse] = await client.request([
+        "Email/query",
+        {
+          accountId,
+          filter: {
+            inMailbox: inboxId,
+          },
+          sort: [{ property: "receivedAt", isAscending: false }],
+          limit: apiLimit,
+          calculateTotal: true,
+        },
+      ]);
+
+      if (!emailsResponse.ids || emailsResponse.ids.length === 0) {
+        console.log("No emails found in inbox");
+        return { ids: [] };
+      }
+
+      console.log(`Found ${emailsResponse.ids.length} emails`);
+      return emailsResponse;
+    },
+    (error): GetEmailsError => ({
+      type: "ApiError",
+      message: `Failed to query emails: ${error}`,
+    }),
+  );
+
+/**
+ * Get detailed email data
+ */
+const getEmailDetails = (
+  client: JamClient,
+  accountId: string,
+  emailIds: string[],
+): TE.TaskEither<GetEmailsError, any> =>
+  TE.tryCatch(
+    async () => {
+      if (emailIds.length === 0) return { list: [] };
+
+      const [emailsData] = await client.request([
+        "Email/get",
+        {
+          accountId,
+          ids: emailIds,
+          properties: [
+            "id",
+            "threadId",
+            "mailboxIds",
+            "keywords",
+            "from",
+            "to",
+            "cc",
+            "bcc",
+            "subject",
+            "receivedAt",
+            "sentAt",
+            "preview",
+            "hasAttachment",
+            "bodyValues",
+            "textBody",
+            "htmlBody",
+          ],
+          fetchTextBodyValues: true,
+          fetchHTMLBodyValues: true,
+        },
+      ]);
+
+      return emailsData;
+    },
+    (error): GetEmailsError => ({
+      type: "ApiError",
+      message: `Failed to get email details: ${error}`,
+    }),
+  );
+
+/**
+ * Process and save emails to files
+ */
+const processEmails = (
+  emails: ReadonlyArray<any>,
+  outputDir: string,
+  pretty: boolean,
+): TE.TaskEither<GetEmailsError, number> =>
+  TE.tryCatch(
+    async () => {
+      if (emails.length === 0) {
+        console.log("No emails to process");
+        return 0;
+      }
+
+      let emailCount = 0;
+
+      // Process emails sequentially to avoid file system race conditions
+      for (const email of emails) {
+        emailCount++;
+
+        // Generate filename with timestamp and subject
+        const timestamp = new Date(email.receivedAt)
+          .toISOString()
+          .replace(/[:.]/g, "-");
+        const safeSubject = (email.subject || "No Subject")
+          .replace(/[^a-z0-9]/gi, "_")
+          .substring(0, 30);
+        const fileName = `${emailCount}-${timestamp}-${safeSubject}.json`;
+        const filePath = path.join(outputDir, fileName);
+
+        // Email data to save
+        const emailData = {
+          id: email.id,
+          threadId: email.threadId,
+          mailboxIds: email.mailboxIds,
+          from: email.from,
+          to: email.to,
+          cc: email.cc,
+          bcc: email.bcc,
+          subject: email.subject,
+          receivedAt: email.receivedAt,
+          sentAt: email.sentAt,
+          preview: email.preview,
+          hasAttachment: email.hasAttachment,
+          bodyValues: email.bodyValues,
+          textBody: email.textBody,
+          htmlBody: email.htmlBody,
+        };
+
+        // Write to file
+        await fs.writeFile(
+          filePath,
+          JSON.stringify(emailData, null, pretty ? 2 : 0),
+          "utf8",
+        );
+
+        console.log(
+          `Saved email ${emailCount}: ${email.subject || "No Subject"}`,
+        );
+      }
+
+      return emailCount;
+    },
+    (error): GetEmailsError => ({
+      type: "ApiError",
+      message: `Failed to process emails: ${error}`,
+    }),
+  );
 
 /**
  * Command to fetch emails from Fastmail using JMAP API
@@ -223,230 +468,9 @@ export const getEmailsCommand = command({
     console.log(`Output directory: ${outputDir}`);
     console.log(`Email limit: ${limit}`);
 
-    // Initialize JMAP client
-    const initializeClient = TE.tryCatch(
-      () => {
-        console.log("Initializing JMAP client...");
-        return Promise.resolve(
-          new JamClient({
-            sessionUrl: "https://api.fastmail.com/jmap/session",
-            bearerToken: password,
-          }),
-        );
-      },
-      (error): AppError => ({
-        type: "ApiError",
-        message: `Failed to initialize JMAP client: ${error}`,
-      }),
-    );
-
-    // Get account ID
-    const getAccountId = (client: JamClient) =>
-      TE.tryCatch(
-        () => {
-          console.log("Getting account ID...");
-          return client.getPrimaryAccount();
-        },
-        (error): AppError => ({
-          type: "ApiError",
-          message: `Failed to get account ID: ${error}`,
-        }),
-      );
-
-    // Get mailboxes (folders)
-    const getMailboxes = (client: JamClient, accountId: string) =>
-      TE.tryCatch(
-        async () => {
-          console.log("Fetching mailboxes...");
-          const [mailboxesResponse] = await client.request([
-            "Mailbox/get",
-            {
-              accountId,
-              properties: ["id", "name", "role", "totalEmails"],
-            },
-          ]);
-          return mailboxesResponse.list || [];
-        },
-        (error): AppError => ({
-          type: "ApiError",
-          message: `Failed to fetch mailboxes: ${error}`,
-        }),
-      );
-
-    // Find inbox
-    const findInbox = (mailboxes: ReadonlyArray<any>) =>
-      pipe(
-        O.fromNullable(mailboxes.find((box: any) => box.role === "inbox")),
-        TE.fromOption(
-          (): AppError => ({
-            type: "ApiError",
-            message: "Could not find inbox folder",
-          }),
-        ),
-        TE.map((inbox) => {
-          console.log(
-            `Found inbox: ${inbox.name} with ${inbox.totalEmails} emails`,
-          );
-          return inbox;
-        }),
-      );
-
-    // Get emails from inbox
-    const getEmails = (
-      client: JamClient,
-      accountId: string,
-      inboxId: string,
-      limit: number | "all",
-    ) =>
-      TE.tryCatch(
-        async () => {
-          console.log("Fetching emails...");
-          // Convert "all" to undefined for API which expects a number or undefined
-          const apiLimit = limit === "all" ? undefined : limit;
-          const [emailsResponse] = await client.request([
-            "Email/query",
-            {
-              accountId,
-              filter: {
-                inMailbox: inboxId,
-              },
-              sort: [{ property: "receivedAt", isAscending: false }],
-              limit: apiLimit,
-              calculateTotal: true,
-            },
-          ]);
-
-          if (!emailsResponse.ids || emailsResponse.ids.length === 0) {
-            console.log("No emails found in inbox");
-            return { ids: [] };
-          }
-
-          console.log(`Found ${emailsResponse.ids.length} emails`);
-          return emailsResponse;
-        },
-        (error): AppError => ({
-          type: "ApiError",
-          message: `Failed to query emails: ${error}`,
-        }),
-      );
-
-    // Get email details
-    const getEmailDetails = (
-      client: JamClient,
-      accountId: string,
-      emailIds: string[],
-    ) =>
-      TE.tryCatch(
-        async () => {
-          if (emailIds.length === 0) return { list: [] };
-
-          const [emailsData] = await client.request([
-            "Email/get",
-            {
-              accountId,
-              ids: emailIds,
-              properties: [
-                "id",
-                "threadId",
-                "mailboxIds",
-                "keywords",
-                "from",
-                "to",
-                "cc",
-                "bcc",
-                "subject",
-                "receivedAt",
-                "sentAt",
-                "preview",
-                "hasAttachment",
-                "bodyValues",
-                "textBody",
-                "htmlBody",
-              ],
-              fetchTextBodyValues: true,
-              fetchHTMLBodyValues: true,
-            },
-          ]);
-
-          return emailsData;
-        },
-        (error): AppError => ({
-          type: "ApiError",
-          message: `Failed to get email details: ${error}`,
-        }),
-      );
-
-    // Process and save emails
-    const processEmails = (
-      emails: ReadonlyArray<any>,
-      outputDir: string,
-      pretty: boolean,
-    ) =>
-      TE.tryCatch(
-        async () => {
-          if (emails.length === 0) {
-            console.log("No emails to process");
-            return 0;
-          }
-
-          let emailCount = 0;
-
-          // Process emails sequentially to avoid file system race conditions
-          for (const email of emails) {
-            emailCount++;
-
-            // Generate filename with timestamp and subject
-            const timestamp = new Date(email.receivedAt)
-              .toISOString()
-              .replace(/[:.]/g, "-");
-            const safeSubject = (email.subject || "No Subject")
-              .replace(/[^a-z0-9]/gi, "_")
-              .substring(0, 30);
-            const fileName = `${emailCount}-${timestamp}-${safeSubject}.json`;
-            const filePath = path.join(outputDir, fileName);
-
-            // Email data to save
-            const emailData = {
-              id: email.id,
-              threadId: email.threadId,
-              mailboxIds: email.mailboxIds,
-              from: email.from,
-              to: email.to,
-              cc: email.cc,
-              bcc: email.bcc,
-              subject: email.subject,
-              receivedAt: email.receivedAt,
-              sentAt: email.sentAt,
-              preview: email.preview,
-              hasAttachment: email.hasAttachment,
-              bodyValues: email.bodyValues,
-              textBody: email.textBody,
-              htmlBody: email.htmlBody,
-            };
-
-            // Write to file
-            await fs.writeFile(
-              filePath,
-              JSON.stringify(emailData, null, pretty ? 2 : 0),
-              "utf8",
-            );
-
-            console.log(
-              `Saved email ${emailCount}: ${email.subject || "No Subject"}`,
-            );
-          }
-
-          return emailCount;
-        },
-        (error): AppError => ({
-          type: "ApiError",
-          message: `Failed to process emails: ${error}`,
-        }),
-      );
-
     // Main program flow using fp-ts with flattened structure
     const program = pipe(
-      initializeClient,
+      initializeJamClient(password),
       TE.chain(client => 
         pipe(
           getAccountId(client),
