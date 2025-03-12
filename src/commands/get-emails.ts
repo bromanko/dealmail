@@ -1,12 +1,10 @@
 import { command, option, string, flag, extendType } from "cmd-ts";
 import * as fs from "fs/promises";
-import { existsSync, constants } from "fs";
+import { constants } from "fs";
 import * as path from "path";
 import { JamClient } from "jmap-jam";
 import * as E from "fp-ts/lib/Either.js";
 import * as TE from "fp-ts/lib/TaskEither.js";
-import * as T from "fp-ts/lib/Task.js";
-import * as A from "fp-ts/lib/Array.js";
 import * as O from "fp-ts/lib/Option.js";
 import { pipe } from "fp-ts/lib/function.js";
 
@@ -145,7 +143,9 @@ const RequiredToken = extendType(string, {
 type EmailLimit = number | "all";
 
 // Parse a string to EmailLimit
-const parseEmailLimit = (limitStr: string): E.Either<GetEmailsError, EmailLimit> => {
+const parseEmailLimit = (
+  limitStr: string,
+): E.Either<GetEmailsError, EmailLimit> => {
   if (limitStr.toLowerCase() === "all") {
     return E.right("all");
   }
@@ -177,8 +177,8 @@ const EmailLimitType = extendType(string, {
  * Initialize JMAP client
  */
 const initializeJamClient = (
-  password: string
-): TE.TaskEither<GetEmailsError, JamClient> => 
+  password: string,
+): TE.TaskEither<GetEmailsError, JamClient> =>
   TE.tryCatch(
     () => {
       console.log("Initializing JMAP client...");
@@ -199,7 +199,7 @@ const initializeJamClient = (
  * Get primary account ID
  */
 const getAccountId = (
-  client: JamClient
+  client: JamClient,
 ): TE.TaskEither<GetEmailsError, string> =>
   TE.tryCatch(
     () => {
@@ -216,8 +216,8 @@ const getAccountId = (
  * Get mailboxes (folders)
  */
 const getMailboxes = (
-  client: JamClient, 
-  accountId: string
+  client: JamClient,
+  accountId: string,
 ): TE.TaskEither<GetEmailsError, ReadonlyArray<any>> =>
   TE.tryCatch(
     async () => {
@@ -241,7 +241,7 @@ const getMailboxes = (
  * Find inbox in mailboxes
  */
 const findInbox = (
-  mailboxes: ReadonlyArray<any>
+  mailboxes: ReadonlyArray<any>,
 ): TE.TaskEither<GetEmailsError, any> =>
   pipe(
     O.fromNullable(mailboxes.find((box: any) => box.role === "inbox")),
@@ -471,43 +471,43 @@ export const getEmailsCommand = command({
     // Main program flow using fp-ts with flattened structure
     const program = pipe(
       initializeJamClient(password),
-      TE.chain(client => 
+      TE.chain((client) =>
         pipe(
           getAccountId(client),
-          TE.map(accountId => ({ client, accountId }))
-        )
+          TE.map((accountId) => ({ client, accountId })),
+        ),
       ),
-      TE.chain(({ client, accountId }) => 
+      TE.chain(({ client, accountId }) =>
         pipe(
           getMailboxes(client, accountId),
-          TE.map(mailboxes => ({ client, accountId, mailboxes }))
-        )
+          TE.map((mailboxes) => ({ client, accountId, mailboxes })),
+        ),
       ),
       TE.chain(({ client, accountId, mailboxes }) =>
         pipe(
           findInbox(mailboxes),
-          TE.map(inbox => ({ client, accountId, inbox }))
-        )
+          TE.map((inbox) => ({ client, accountId, inbox })),
+        ),
       ),
       TE.chain(({ client, accountId, inbox }) =>
         pipe(
           getEmails(client, accountId, inbox.id, emailLimit),
-          TE.map(emailsResponse => ({ client, accountId, emailsResponse }))
-        )
+          TE.map((emailsResponse) => ({ client, accountId, emailsResponse })),
+        ),
       ),
       TE.chain(({ client, accountId, emailsResponse }) =>
         pipe(
           getEmailDetails(client, accountId, emailsResponse.ids || []),
-          TE.map(emailsData => ({ emailsData }))
-        )
+          TE.map((emailsData) => ({ emailsData })),
+        ),
       ),
       TE.chain(({ emailsData }) =>
-        processEmails(emailsData.list || [], outputDir, pretty)
+        processEmails(emailsData.list || [], outputDir, pretty),
       ),
-      TE.map(count => {
+      TE.map((count) => {
         console.log(`Completed processing ${count} emails`);
         return count;
-      })
+      }),
     );
 
     // Execute the program
