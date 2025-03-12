@@ -1,7 +1,6 @@
-import { constants } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { command, extendType, flag, option, string } from "cmd-ts";
+import { command, extendType, option, string } from "cmd-ts";
 import * as E from "fp-ts/lib/Either.js";
 import * as O from "fp-ts/lib/Option.js";
 import * as TE from "fp-ts/lib/TaskEither.js";
@@ -136,18 +135,6 @@ class ApiError extends DealMailError {
   }
 }
 
-class FileWriteError extends DealMailError {
-  path: string;
-  cause?: Error;
-
-  constructor(path: string, cause?: Error) {
-    super(`Failed to write file ${path}${cause ? `: ${cause.message}` : ""}`);
-    this.path = path;
-    this.cause = cause;
-    Object.setPrototypeOf(this, FileWriteError.prototype);
-  }
-}
-
 class ScreenshotError extends DealMailError {
   cause?: Error;
 
@@ -160,25 +147,6 @@ class ScreenshotError extends DealMailError {
 
 // Type alias for all possible error types
 type GetEmailsError = DealMailError;
-
-const ExistingPath = extendType(string, {
-  displayName: "path",
-  description: "An existing path",
-  async from(str) {
-    const resolved = path.resolve(str);
-
-    return pipe(
-      TE.tryCatch(
-        () => fs.access(resolved, constants.F_OK),
-        () => new PathNotFoundError(resolved),
-      ),
-      TE.map(() => resolved),
-      TE.getOrElse((error) => {
-        throw error;
-      }),
-    )();
-  },
-});
 
 const isDirectory = (path: string): TE.TaskEither<GetEmailsError, string> =>
   pipe(
@@ -509,49 +477,49 @@ const saveEmailToFile = (
   // Generate HTML for email rendering based on available content
   const generateEmailHtml = (): string => {
     // Extract raw content (HTML or text) from email parts
-    const extractRawContent = (): { content: string, isHtml: boolean } => {
+    const extractRawContent = (): { content: string; isHtml: boolean } => {
       // Try to get HTML content first
       if (email.htmlBody && email.htmlBody.length > 0 && email.bodyValues) {
         for (const part of email.htmlBody) {
           if (part.partId && email.bodyValues[part.partId]) {
             return {
               content: email.bodyValues[part.partId].value,
-              isHtml: true
+              isHtml: true,
             };
           }
         }
       }
-      
+
       // Fall back to text content if no HTML is available
       if (email.textBody && email.textBody.length > 0 && email.bodyValues) {
         for (const part of email.textBody) {
           if (part.partId && email.bodyValues[part.partId]) {
             return {
               content: email.bodyValues[part.partId].value,
-              isHtml: false
+              isHtml: false,
             };
           }
         }
       }
-      
+
       // No content found
       return {
         content: "",
-        isHtml: false
+        isHtml: false,
       };
     };
-    
+
     // Create metadata HTML block (common across all email types)
     const getMetadataHtml = (): string => `
       <div class="email-metadata">
         <h2>${email.subject || "No Subject"}</h2>
-        <p><strong>From:</strong> ${email.from ? email.from.map(addr => addr.name || addr.email).join(", ") : "Unknown"}</p>
-        <p><strong>To:</strong> ${email.to ? email.to.map(addr => addr.name || addr.email).join(", ") : "Unknown"}</p>
-        ${email.cc && email.cc.length > 0 ? `<p><strong>CC:</strong> ${email.cc.map(addr => addr.name || addr.email).join(", ")}</p>` : ""}
+        <p><strong>From:</strong> ${email.from ? email.from.map((addr) => addr.name || addr.email).join(", ") : "Unknown"}</p>
+        <p><strong>To:</strong> ${email.to ? email.to.map((addr) => addr.name || addr.email).join(", ") : "Unknown"}</p>
+        ${email.cc && email.cc.length > 0 ? `<p><strong>CC:</strong> ${email.cc.map((addr) => addr.name || addr.email).join(", ")}</p>` : ""}
         <p><strong>Date:</strong> ${new Date(email.receivedAt).toLocaleString()}</p>
       </div>
     `;
-    
+
     // Get common styles for all templated email types
     const commonStyles = `
       <style>
@@ -560,18 +528,19 @@ const saveEmailToFile = (
         .email-content { padding: 10px; }
       </style>
     `;
-    
+
     // Get content and determine format
     const { content, isHtml } = extractRawContent();
-    
+
     // Special case: If email already contains full HTML document structure, use it directly
-    if (isHtml && (
-        content.trim().toLowerCase().startsWith("<!doctype") || 
-        content.trim().toLowerCase().startsWith("<html")
-    )) {
+    if (
+      isHtml &&
+      (content.trim().toLowerCase().startsWith("<!doctype") ||
+        content.trim().toLowerCase().startsWith("<html"))
+    ) {
       return content;
     }
-    
+
     // Create appropriate HTML based on content type
     if (content === "") {
       // No content available
@@ -684,7 +653,7 @@ const processEmails = (
 
   // Process each email sequentially to avoid file system race conditions
   const processAllEmails = emails.reduce(
-    (acc: TE.TaskEither<GetEmailsError, number>, email, index) =>
+    (acc: TE.TaskEither<GetEmailsError, number>, email) =>
       pipe(
         acc,
         TE.chain((count) =>
