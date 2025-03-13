@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build and test
+        run: |
+          nix develop --command bash -c '
+            # Install dependencies
+            pnpm install
+
+            # Run tests
+            pnpm test
+
+            # Build
+            pnpm run build
+          '
+
+      - name: Package for Linux
+        run: |
+          nix develop --command bash -c '
+            mkdir -p dist-packages/linux
+            cp -r dist/* dist-packages/linux/
+            cp package.json dist-packages/linux/
+            cd dist-packages/linux
+            npm pkg set type="commonjs"
+            cd ..
+            tar -czf dealmail-linux.tar.gz linux
+          '
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            dist-packages/dealmail-linux.tar.gz
+          draft: false
+          prerelease: false

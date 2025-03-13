@@ -1,0 +1,31 @@
+name: Validate
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: DeterminateSystems/flake-checker-action@main
+
+      - name: Run checks
+        run: |
+          nix develop --command bash -c '
+            # Install dependencies
+            pnpm install
+
+            # Run validation checks
+            pnpm run typecheck
+            pnpm run lint
+            pnpm test
+          '
