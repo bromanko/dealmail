@@ -1,5 +1,6 @@
 import { run, subcommands } from "cmd-ts";
 import { getEmailsCommand } from "./commands/get-emails.js";
+import { extractCommand } from "./commands/extract.js";
 import { getVersion } from "./commands/version.js";
 
 const cli = subcommands({
@@ -8,6 +9,7 @@ const cli = subcommands({
   version: getVersion(),
   cmds: {
     "get-emails": getEmailsCommand,
+    "extract": extractCommand,
   },
 });
 
