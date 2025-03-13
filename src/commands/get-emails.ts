@@ -184,7 +184,6 @@ const createDirectoryIfNotExists = (
     TE.map(() => dirPath),
   );
 
-// Output directory validator
 const OutputDirectory = extendType(string, {
   displayName: "output-dir",
   description: "Directory to save output (will be created if it doesn't exist)",
@@ -221,7 +220,6 @@ const RequiredUsername = extendType(string, {
   },
 });
 
-// Password/token validator
 const RequiredToken = extendType(string, {
   displayName: "password",
   description: "Fastmail API token/password",
@@ -312,23 +310,26 @@ const getMailboxes = (
   client: JamClient,
   accountId: string,
 ): TE.TaskEither<GetEmailsError, ReadonlyArray<Mailbox>> =>
-  TE.tryCatch(
-    async () => {
-      console.log("Fetching mailboxes...");
-      const [mailboxesResponse] = await client.request([
-        "Mailbox/get",
-        {
-          accountId,
-          properties: ["id", "name", "role", "totalEmails"],
-        },
-      ]);
-      return mailboxesResponse.list || [];
-    },
-    (error) =>
-      new ApiError(
-        `Failed to fetch mailboxes: ${error}`,
-        error instanceof Error ? error : undefined,
-      ),
+  pipe(
+    TE.Do,
+    TE.tap(() => TE.right(console.log("Fetching mailboxes..."))),
+    TE.chain(() => 
+      TE.tryCatch(
+        () => client.request([
+          "Mailbox/get",
+          {
+            accountId,
+            properties: ["id", "name", "role", "totalEmails"],
+          },
+        ]),
+        (error) =>
+          new ApiError(
+            `Failed to fetch mailboxes: ${error}`,
+            error instanceof Error ? error : undefined,
+          ),
+      )
+    ),
+    TE.map(([mailboxesResponse]) => mailboxesResponse.list || []),
   );
 
 /**
