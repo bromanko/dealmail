@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
 import { command, extendType, multioption, option, string } from "cmd-ts";
-import { GoogleGenerativeAI, Schema, SchemaType } from "@google/generative-ai";
+import { GoogleGenerativeAI, type Schema, SchemaType } from "@google/generative-ai";
 import * as E from "fp-ts/lib/Either.js";
 import * as TE from "fp-ts/lib/TaskEither.js";
 import { pipe } from "fp-ts/lib/function.js";
@@ -280,10 +280,10 @@ export const extractCommand = command({
             return 1;
           },
           (results) => {
-            Object.entries(results).forEach(([imagePath, dealInfo]) => {
+            for (const [imagePath, dealInfo] of Object.entries(results)) {
               console.log(`\n--- Results for ${imagePath} ---`);
               console.log(JSON.stringify(dealInfo, null, 2));
-            });
+            }
             return 0;
           },
         ),
