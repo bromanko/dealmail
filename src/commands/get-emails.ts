@@ -82,16 +82,15 @@ type EmailsDataResponse = {
   notFound?: readonly string[];
 };
 
-class DealMailError extends Error {
+class GetEmailsError extends Error {
   constructor(message: string) {
     super(message);
     this.name = this.constructor.name;
-    // Ensure proper prototype chain for instanceof checks
-    Object.setPrototypeOf(this, DealMailError.prototype);
+    Object.setPrototypeOf(this, GetEmailsError.prototype);
   }
 }
 
-class PathNotFoundError extends DealMailError {
+class PathNotFoundError extends GetEmailsError {
   path: string;
 
   constructor(path: string) {
@@ -101,7 +100,7 @@ class PathNotFoundError extends DealMailError {
   }
 }
 
-class NotADirectoryError extends DealMailError {
+class NotADirectoryError extends GetEmailsError {
   path: string;
 
   constructor(path: string) {
@@ -111,7 +110,7 @@ class NotADirectoryError extends DealMailError {
   }
 }
 
-class DirectoryCreationFailedError extends DealMailError {
+class DirectoryCreationFailedError extends GetEmailsError {
   path: string;
   cause?: Error;
 
@@ -125,7 +124,7 @@ class DirectoryCreationFailedError extends DealMailError {
   }
 }
 
-class ApiError extends DealMailError {
+class ApiError extends GetEmailsError {
   cause?: Error;
 
   constructor(message: string, cause?: Error) {
@@ -135,7 +134,7 @@ class ApiError extends DealMailError {
   }
 }
 
-class ScreenshotError extends DealMailError {
+class ScreenshotError extends GetEmailsError {
   cause?: Error;
 
   constructor(message: string, cause?: Error) {
@@ -144,9 +143,6 @@ class ScreenshotError extends DealMailError {
     Object.setPrototypeOf(this, ScreenshotError.prototype);
   }
 }
-
-// Type alias for all possible error types
-type GetEmailsError = DealMailError;
 
 const isDirectory = (path: string): TE.TaskEither<GetEmailsError, string> =>
   pipe(
@@ -558,7 +554,9 @@ const saveEmailToFile = (
           </div>
         </body>
       </html>`;
-    } else if (!isHtml) {
+    }
+
+    if (!isHtml) {
       // Plain text content
       return `<!DOCTYPE html>
       <html>
@@ -574,9 +572,10 @@ const saveEmailToFile = (
           </div>
         </body>
       </html>`;
-    } else {
-      // HTML content (fragment)
-      return `<!DOCTYPE html>
+    }
+
+    // HTML content (fragment)
+    return `<!DOCTYPE html>
       <html>
         <head>
           <meta charset="utf-8">
@@ -590,7 +589,6 @@ const saveEmailToFile = (
           </div>
         </body>
       </html>`;
-    }
   };
 
   return pipe(
@@ -668,16 +666,13 @@ const processEmails = (
 
   return pipe(
     processAllEmails,
-    TE.mapLeft((error) => {
-      // Use type guard with any to avoid TypeScript error
-      if ((error as any) instanceof DealMailError) {
-        return error as DealMailError;
-      }
-      return new ApiError(
-        `Failed to process emails: ${JSON.stringify(error, null, 2)}`,
-        error instanceof Error ? error : undefined,
-      );
-    }),
+    TE.mapLeft(
+      (error) =>
+        new ApiError(
+          `Failed to process emails: ${JSON.stringify(error, null, 2)}`,
+          error instanceof Error ? error : undefined,
+        ),
+    ),
   );
 };
 
