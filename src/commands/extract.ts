@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
 import { command, extendType, multioption, option, string } from "cmd-ts";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenerativeAI, Schema, SchemaType } from "@google/generative-ai";
 import * as E from "fp-ts/lib/Either.js";
 import * as TE from "fp-ts/lib/TaskEither.js";
 import { pipe } from "fp-ts/lib/function.js";
@@ -41,13 +41,11 @@ class GeminiError extends ExtractError {
   }
 }
 
-// Define a custom type for arrays of image paths
 const ImagePaths = {
   from: async (paths: string[]) => {
     if (paths.length === 0) {
       throw new ExtractError("At least one image path is required");
     }
-    // Validate each path
     for (const path of paths) {
       if (path.trim() === "") {
         throw new ExtractError("Image path cannot be empty");
@@ -57,13 +55,11 @@ const ImagePaths = {
   },
 };
 
-// Validate required API key
 const validateApiKey = (value: string): E.Either<ExtractError, string> =>
   !value || value.trim() === ""
     ? E.left(new ApiKeyError("Gemini API key is required"))
     : E.right(value);
 
-// Define API key type with validation
 const ApiKey = extendType(string, {
   displayName: "api-key",
   description: "Google Gemini API key",
@@ -96,7 +92,71 @@ const readImageAsBase64 = (
   );
 
 /**
- * Process a single image with Gemini Vision
+ * Define the schema for structured output from Gemini
+ */
+const emailInfoSchema: Schema = {
+  description: "Extracted email information",
+  type: SchemaType.OBJECT,
+  properties: {
+    sender: {
+      description: "Name of the sender",
+      type: SchemaType.STRING,
+      nullable: false,
+    },
+    sales: {
+      description: "List of sales",
+      type: SchemaType.ARRAY,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          description: {
+            description: "Description of the sale",
+            type: SchemaType.STRING,
+            nullable: false,
+          },
+          discount: {
+            description: "Discount amount or percentage",
+            type: SchemaType.STRING,
+            nullable: true,
+          },
+          endDate: {
+            description: "End date of the sale",
+            type: SchemaType.STRING,
+            nullable: true,
+          },
+        },
+      },
+    },
+    couponCodes: {
+      description: "List of coupon codes",
+      type: SchemaType.ARRAY,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          code: {
+            description: "Coupon code",
+            type: SchemaType.STRING,
+            nullable: false,
+          },
+          discount: {
+            description: "Discount amount or percentage",
+            type: SchemaType.STRING,
+            nullable: true,
+          },
+          expirationDate: {
+            description: "Expiration date of the coupon",
+            type: SchemaType.STRING,
+            nullable: true,
+          },
+        },
+      },
+    },
+  },
+  required: ["sender", "sales", "couponCodes"],
+};
+
+/**
+ * Process a single image with Gemini Vision using structured output
  */
 const processImageWithGemini = (
   apiKey: string,
@@ -111,16 +171,16 @@ const processImageWithGemini = (
 
           // Initialize the Gemini API client
           const genAI = new GoogleGenerativeAI(apiKey);
-          const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
-          // Create the prompt
-          const prompt =
-            "Please analyze this email screenshot and extract the following information in JSON format:\n" +
-            "- Sender\n" +
-            "- Any promotional deals, discounts, or offers mentioned\n" +
-            "- Coupon codes if available\n" +
-            "- Expiration dates for any offers\n" +
-            "Format the response as valid JSON with these fields.";
+          const model = genAI.getGenerativeModel({
+            model: "gemini-2.0-flash",
+            systemInstruction:
+              "You are an AI assistant specialized in extracting structured information from email screenshots. Focus on accurately identifying promotional deals and coupon codes.",
+            generationConfig: {
+              responseMimeType: "application/json",
+              responseSchema: emailInfoSchema,
+            },
+          });
 
           // Prepare the image data
           const imagePart = {
@@ -130,12 +190,28 @@ const processImageWithGemini = (
             },
           };
 
-          // Generate content
-          const result = await model.generateContent([prompt, imagePart]);
-          const response = await result.response;
-          const text = response.text();
+          // Create a detailed prompt with expected output format
+          const prompt = `
+            Analyze this email screenshot and extract detailed information about any promotional deals, discounts, or offers.
+          `;
 
-          return text;
+          // Generate content
+          const result = await model.generateContent([
+            { text: prompt },
+            imagePart,
+          ]);
+
+          const text = result.response.text();
+
+          // Parse the JSON response
+          try {
+            return JSON.parse(text);
+          } catch (err) {
+            throw new GeminiError(
+              `Failed to parse JSON response: ${err}. Response was: ${text}`,
+              err instanceof Error ? err : undefined,
+            );
+          }
         },
         (error) =>
           new GeminiError(
@@ -204,9 +280,9 @@ export const extractCommand = command({
             return 1;
           },
           (results) => {
-            Object.entries(results).forEach(([imagePath, result]) => {
+            Object.entries(results).forEach(([imagePath, dealInfo]) => {
               console.log(`\n--- Results for ${imagePath} ---`);
-              console.log(result);
+              console.log(JSON.stringify(dealInfo, null, 2));
             });
             return 0;
           },
