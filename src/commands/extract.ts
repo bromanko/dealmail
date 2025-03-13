@@ -116,14 +116,10 @@ const processImageWithGemini = (
           // Create the prompt
           const prompt =
             "Please analyze this email screenshot and extract the following information in JSON format:\n" +
-            "- Subject line\n" +
-            "- Sender information\n" +
-            "- Date sent\n" +
+            "- Sender\n" +
             "- Any promotional deals, discounts, or offers mentioned\n" +
             "- Coupon codes if available\n" +
             "- Expiration dates for any offers\n" +
-            "- Product categories being promoted\n" +
-            "- Call to action buttons or links\n\n" +
             "Format the response as valid JSON with these fields.";
 
           // Prepare the image data
