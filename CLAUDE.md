@@ -29,6 +29,7 @@
 - Avoid deeply nested callback chains. Prefer using fp-ts constructs such as `pipe`, `flow`, and `chain` to compose functions
 - Prefer arrow functions with implicit returns
 - Prefer functions that use a single pipe rather than mixing some imperative logic followed by a pipeline
+- When writing a function that uses Task or TaskEither do not also use async/await
 
 ## Project Structure
 - `src/` - Source code
