@@ -6,7 +6,6 @@ import * as O from "fp-ts/lib/Option.js";
 import * as TE from "fp-ts/lib/TaskEither.js";
 import { pipe } from "fp-ts/lib/function.js";
 import { JamClient } from "jmap-jam";
-import puppeteer from "puppeteer";
 
 // Define types for JMAP responses
 type MailboxRole =
@@ -131,16 +130,6 @@ class ApiError extends GetEmailsError {
     super(`API error: ${message}`);
     this.cause = cause;
     Object.setPrototypeOf(this, ApiError.prototype);
-  }
-}
-
-class ScreenshotError extends GetEmailsError {
-  cause?: Error;
-
-  constructor(message: string, cause?: Error) {
-    super(`Failed to generate screenshot: ${message}`);
-    this.cause = cause;
-    Object.setPrototypeOf(this, ScreenshotError.prototype);
   }
 }
 
@@ -459,290 +448,99 @@ const getEmailDetails = (
 /**
  * Extract raw content (HTML or text) from email parts
  */
-const extractRawContent = (
-  email: JmapEmailData,
-): { content: string; isHtml: boolean } => {
-  // Try to get HTML content first
+const extractHtmlContent = (email: JmapEmailData): string | null => {
+  // Try to get HTML content
   if (email.htmlBody && email.htmlBody.length > 0 && email.bodyValues) {
     for (const part of email.htmlBody) {
       if (part.partId && email.bodyValues[part.partId]) {
-        return {
-          content: email.bodyValues[part.partId].value,
-          isHtml: true,
-        };
+        return email.bodyValues[part.partId].value;
       }
     }
   }
+  return null;
+};
 
-  // Fall back to text content if no HTML is available
+/**
+ * Extract text content from email parts
+ */
+const extractTextContent = (email: JmapEmailData): string | null => {
+  // Get text content
   if (email.textBody && email.textBody.length > 0 && email.bodyValues) {
     for (const part of email.textBody) {
       if (part.partId && email.bodyValues[part.partId]) {
-        return {
-          content: email.bodyValues[part.partId].value,
-          isHtml: false,
-        };
+        return email.bodyValues[part.partId].value;
       }
     }
   }
+  return null;
+};
 
-  // No content found
+/**
+ * Process and extract email content for storage
+ */
+interface EmailJson {
+  id: string;
+  threadId: string;
+  subject?: string;
+  from?: Array<{ name?: string; email: string }>;
+  to?: Array<{ name?: string; email: string }>;
+  cc?: Array<{ name?: string; email: string }>;
+  bcc?: Array<{ name?: string; email: string }>;
+  receivedAt: string;
+  sentAt?: string;
+  htmlBody?: string;
+  textBody?: string;
+  hasAttachment?: boolean;
+}
+
+/**
+ * Convert JmapEmailData to a simplified JSON format
+ */
+const createEmailJson = (email: JmapEmailData): EmailJson => {
+  const htmlContent = extractHtmlContent(email);
+  const textContent = extractTextContent(email);
+
   return {
-    content: "",
-    isHtml: false,
+    id: email.id,
+    threadId: email.threadId,
+    subject: email.subject,
+    from: email.from,
+    to: email.to,
+    cc: email.cc,
+    bcc: email.bcc,
+    receivedAt: email.receivedAt,
+    sentAt: email.sentAt,
+    htmlBody: htmlContent || undefined,
+    textBody: textContent || undefined,
+    hasAttachment: email.hasAttachment,
   };
 };
 
 /**
- * Create metadata HTML block (common across all email types)
- */
-const getMetadataHtml = (email: JmapEmailData): string => `
-  <div class="email-metadata">
-    <h2>${email.subject || "No Subject"}</h2>
-    <p><strong>From:</strong> ${email.from ? email.from.map((addr) => addr.name || addr.email).join(", ") : "Unknown"}</p>
-    <p><strong>To:</strong> ${email.to ? email.to.map((addr) => addr.name || addr.email).join(", ") : "Unknown"}</p>
-    ${email.cc && email.cc.length > 0 ? `<p><strong>CC:</strong> ${email.cc.map((addr) => addr.name || addr.email).join(", ")}</p>` : ""}
-    <p><strong>Date:</strong> ${new Date(email.receivedAt).toLocaleString()}</p>
-  </div>
-`;
-
-/**
- * Get common styles for all templated email types
- */
-const getCommonStyles = (): string => `
-  <style>
-    body { font-family: Arial, sans-serif; margin: 20px; }
-    .email-metadata { background: #f5f5f5; padding: 10px; margin-bottom: 20px; border-radius: 5px; }
-    .email-content { padding: 10px; }
-  </style>
-`;
-
-/**
- * Generate full HTML for rendering an email
- */
-const generateEmailHtml = (email: JmapEmailData): string => {
-  const { content, isHtml } = extractRawContent(email);
-  const metadataHtml = getMetadataHtml(email);
-  const commonStyles = getCommonStyles();
-  const subject = email.subject || "No Subject";
-
-  // Special case: If email already contains full HTML document structure, use it directly
-  if (
-    isHtml &&
-    (content.trim().toLowerCase().startsWith("<!doctype") ||
-      content.trim().toLowerCase().startsWith("<html"))
-  ) {
-    return content;
-  }
-
-  // Create appropriate HTML based on content type
-  if (content === "") {
-    // No content available
-    return `<!DOCTYPE html>
-    <html>
-      <head>
-        <meta charset="utf-8">
-        <title>${subject}</title>
-        ${commonStyles}
-      </head>
-      <body>
-        ${metadataHtml}
-        <div class="email-content">
-          <p>No content available for this email.</p>
-        </div>
-      </body>
-    </html>`;
-  }
-
-  if (!isHtml) {
-    // Plain text content
-    return `<!DOCTYPE html>
-    <html>
-      <head>
-        <meta charset="utf-8">
-        <title>${subject}</title>
-        ${commonStyles}
-      </head>
-      <body>
-        ${metadataHtml}
-        <div class="email-content">
-          <pre style="font-family: sans-serif; white-space: pre-wrap;">${content}</pre>
-        </div>
-      </body>
-    </html>`;
-  }
-
-  // HTML content (fragment)
-  return `<!DOCTYPE html>
-  <html>
-    <head>
-      <meta charset="utf-8">
-      <title>${subject}</title>
-      ${commonStyles}
-    </head>
-    <body>
-      ${metadataHtml}
-      <div class="email-content">
-        ${content}
-      </div>
-    </body>
-  </html>`;
-};
-
-/**
- * Launch puppeteer browser
- */
-const launchBrowser = (): TE.TaskEither<GetEmailsError, puppeteer.Browser> =>
-  TE.tryCatch(
-    () => puppeteer.launch({ headless: true }),
-    (error) =>
-      new ScreenshotError(
-        `Failed to launch browser: ${error}`,
-        error instanceof Error ? error : undefined,
-      ),
-  );
-
-/**
- * Create a new page in the browser
- */
-const createPage = (
-  browser: puppeteer.Browser,
-): TE.TaskEither<GetEmailsError, puppeteer.Page> =>
-  TE.tryCatch(
-    () => browser.newPage(),
-    (error) =>
-      new ScreenshotError(
-        `Failed to create page: ${error}`,
-        error instanceof Error ? error : undefined,
-      ),
-  );
-
-/**
- * Set HTML content in the page
- */
-const setPageContent = (
-  page: puppeteer.Page,
-  html: string,
-): TE.TaskEither<GetEmailsError, puppeteer.Page> =>
-  TE.tryCatch(
-    () => page.setContent(html, { waitUntil: "networkidle0" }).then(() => page),
-    (error) =>
-      new ScreenshotError(
-        `Failed to set page content: ${error}`,
-        error instanceof Error ? error : undefined,
-      ),
-  );
-
-/**
- * Set viewport size
- */
-const setViewport = (
-  page: puppeteer.Page,
-): TE.TaskEither<GetEmailsError, puppeteer.Page> =>
-  TE.tryCatch(
-    () => page.setViewport({ width: 1200, height: 800 }).then(() => page),
-    (error) =>
-      new ScreenshotError(
-        `Failed to set viewport: ${error}`,
-        error instanceof Error ? error : undefined,
-      ),
-  );
-
-/**
- * Take screenshot and save to file
- */
-const captureScreenshot = (
-  page: puppeteer.Page,
-  filePath: string,
-): TE.TaskEither<GetEmailsError, string> =>
-  TE.tryCatch(
-    () =>
-      page
-        .screenshot({
-          path: filePath,
-          fullPage: true,
-          type: "png",
-        })
-        .then(() => filePath),
-    (error) =>
-      new ScreenshotError(
-        `Failed to capture screenshot: ${error}`,
-        error instanceof Error ? error : undefined,
-      ),
-  );
-
-/**
- * Close browser
- */
-const closeBrowser = (
-  browser: puppeteer.Browser,
-): TE.TaskEither<GetEmailsError, void> =>
-  TE.tryCatch(
-    () => browser.close(),
-    (error) =>
-      new ScreenshotError(
-        `Failed to close browser: ${error}`,
-        error instanceof Error ? error : undefined,
-      ),
-  );
-
-/**
- * Take a screenshot using Puppeteer with a fully functional approach
- */
-const takeScreenshot = (
-  html: string,
-  filePath: string,
-): TE.TaskEither<GetEmailsError, string> =>
-  pipe(
-    launchBrowser(),
-    TE.chain((browser) =>
-      pipe(
-        createPage(browser),
-        TE.chain((page) =>
-          pipe(
-            setPageContent(page, html),
-            TE.chain(setViewport),
-            TE.chain((configuredPage) =>
-              captureScreenshot(configuredPage, filePath),
-            ),
-            TE.chainFirst(() => closeBrowser(browser)),
-            TE.orElse((error) =>
-              pipe(
-                TE.tryCatch(
-                  () => browser.close(),
-                  () => error, // Preserve original error
-                ),
-                TE.chain(() => TE.left(error)), // Re-throw original error
-              ),
-            ),
-          ),
-        ),
-      ),
-    ),
-  );
-
-/**
- * Convert a single email to a screenshot
+ * Save email to JSON file
  */
 const saveEmailToFile = (
   email: JmapEmailData,
   outputDir: string,
-): TE.TaskEither<GetEmailsError, string> =>
-  pipe(
-    TE.of(path.join(outputDir, `email-${email.id}.png`)),
-    TE.chain((filePath) =>
-      pipe(
-        TE.of(generateEmailHtml(email)),
-        TE.chain((html) => takeScreenshot(html, filePath)),
-      ),
+): TE.TaskEither<GetEmailsError, string> => {
+  const emailJson = createEmailJson(email);
+  const filePath = path.join(outputDir, `email-${email.id}.json`);
+
+  return pipe(
+    TE.tryCatch(
+      () => fs.writeFile(filePath, JSON.stringify(emailJson, null, 2)),
+      (error) =>
+        new ApiError(
+          `Failed to write email to file: ${error}`,
+          error instanceof Error ? error : undefined,
+        ),
     ),
-    TE.map((filePath) => {
-      console.log(
-        `Saved screenshot ${email.id}: ${email.subject || "No Subject"}`,
-      );
+    TE.map(() => {
+      console.log(`Saved email ${email.id}: ${email.subject || "No Subject"}`);
       return filePath;
     }),
   );
+};
 
 /**
  * Process and save emails to files
@@ -788,7 +586,7 @@ const processEmails = (
  */
 export const getEmailsCommand = command({
   name: "get-emails",
-  description: "Fetch emails from Fastmail and save as PNG screenshots",
+  description: "Fetch emails from Fastmail and save as JSON files",
   args: {
     username: option({
       type: RequiredUsername,
@@ -809,7 +607,7 @@ export const getEmailsCommand = command({
       type: OutputDirectory,
       long: "output",
       short: "o",
-      description: "Directory to save email screenshots (default: ./emails)",
+      description: "Directory to save email JSON files (default: ./emails)",
       defaultValue: () => "./emails",
     }),
     limit: option({
