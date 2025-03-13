@@ -313,21 +313,22 @@ const getMailboxes = (
   pipe(
     TE.Do,
     TE.tap(() => TE.right(console.log("Fetching mailboxes..."))),
-    TE.chain(() => 
+    TE.chain(() =>
       TE.tryCatch(
-        () => client.request([
-          "Mailbox/get",
-          {
-            accountId,
-            properties: ["id", "name", "role", "totalEmails"],
-          },
-        ]),
+        () =>
+          client.request([
+            "Mailbox/get",
+            {
+              accountId,
+              properties: ["id", "name", "role", "totalEmails"],
+            },
+          ]),
         (error) =>
           new ApiError(
             `Failed to fetch mailboxes: ${error}`,
             error instanceof Error ? error : undefined,
           ),
-      )
+      ),
     ),
     TE.map(([mailboxesResponse]) => mailboxesResponse.list || []),
   );
@@ -458,17 +459,13 @@ const getEmailDetails = (
 // Convert a single email to a screenshot
 const saveEmailToFile = (
   email: JmapEmailData,
-  index: number,
   outputDir: string,
 ): TE.TaskEither<GetEmailsError, string> => {
-  // Generate filename with timestamp and subject
-  const timestamp = new Date(email.receivedAt)
-    .toISOString()
-    .replace(/[:.]/g, "-");
-  const safeSubject = (email.subject || "No Subject")
-    .replace(/[^a-z0-9]/gi, "_")
-    .substring(0, 30);
-  const fileName = `${index}-${timestamp}-${safeSubject}.png`;
+  // Generate filename using unique email ID provided by JMAP
+  // The "id" field in JMAP is guaranteed to be unique for each email
+  // We'll use that as the base for our filename, with a simple prefix for clarity
+  const emailId = email.id; // This is the unique identifier from JMAP
+  const fileName = `email-${emailId}.png`;
   const filePath = path.join(outputDir, fileName);
 
   // Generate HTML for email rendering based on available content
@@ -631,7 +628,7 @@ const saveEmailToFile = (
     ),
     TE.map((path) => {
       console.log(
-        `Saved screenshot ${index}: ${email.subject || "No Subject"}`,
+        `Saved screenshot ${email.id}: ${email.subject || "No Subject"}`,
       );
       return path;
     }),
@@ -657,7 +654,7 @@ const processEmails = (
         acc,
         TE.chain((count) =>
           pipe(
-            saveEmailToFile(email, count + 1, outputDir),
+            saveEmailToFile(email, outputDir),
             TE.map(() => count + 1),
           ),
         ),
