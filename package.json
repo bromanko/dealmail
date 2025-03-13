@@ -28,6 +28,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@google/generative-ai": "^0.24.0",
     "cmd-ts": "^0.13.0",
     "fp-ts": "^2.16.1",
     "jmap-jam": "^0.9.0",
