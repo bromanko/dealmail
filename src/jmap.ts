@@ -331,31 +331,31 @@ export const getEmailDetails = (
 /**
  * Extract HTML content from email parts
  */
-export const extractHtmlContent = (email: JmapEmailData): string | null => {
+export const extractHtmlContent = (email: JmapEmailData): O.Option<string> => {
   // Try to get HTML content
   if (email.htmlBody && email.htmlBody.length > 0 && email.bodyValues) {
     for (const part of email.htmlBody) {
       if (part.partId && email.bodyValues[part.partId]) {
-        return email.bodyValues[part.partId].value;
+        return O.some(email.bodyValues[part.partId].value);
       }
     }
   }
-  return null;
+  return O.none;
 };
 
 /**
  * Extract text content from email parts
  */
-export const extractTextContent = (email: JmapEmailData): string | null => {
+export const extractTextContent = (email: JmapEmailData): O.Option<string> => {
   // Get text content
   if (email.textBody && email.textBody.length > 0 && email.bodyValues) {
     for (const part of email.textBody) {
       if (part.partId && email.bodyValues[part.partId]) {
-        return email.bodyValues[part.partId].value;
+        return O.some(email.bodyValues[part.partId].value);
       }
     }
   }
-  return null;
+  return O.none;
 };
 
 /**

@@ -1,7 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { extendType, string } from "cmd-ts";
-import * as E from "fp-ts/lib/Either.js";
 import * as TE from "fp-ts/lib/TaskEither.js";
 import { pipe } from "fp-ts/lib/function.js";
 
@@ -10,7 +9,7 @@ import { pipe } from "fp-ts/lib/function.js";
  */
 export class FilesystemError extends Error {
   cause?: Error;
-  
+
   constructor(message: string, cause?: Error) {
     super(message);
     this.name = this.constructor.name;
@@ -80,7 +79,9 @@ export class FileError extends FilesystemError {
 /**
  * Check if a path is a directory
  */
-export const isDirectory = (path: string): TE.TaskEither<FilesystemError, string> =>
+export const isDirectory = (
+  path: string,
+): TE.TaskEither<FilesystemError, string> =>
   pipe(
     TE.tryCatch(
       () => fs.stat(path),
@@ -131,7 +132,7 @@ export const readJsonFile = <T>(
 ): TE.TaskEither<FilesystemError, T> =>
   pipe(
     TE.tryCatch(
-      () => fs.readFile(filePath, 'utf8'),
+      () => fs.readFile(filePath, "utf8"),
       (error) =>
         new FileError(
           filePath,

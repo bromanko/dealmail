@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { command, option, extendType, string } from "cmd-ts";
 import * as E from "fp-ts/lib/Either.js";
+import * as O from "fp-ts/lib/Option.js";
 import * as TE from "fp-ts/lib/TaskEither.js";
 import { pipe } from "fp-ts/lib/function.js";
 import {
@@ -108,8 +109,8 @@ interface EmailJson {
  * Convert JmapEmailData to a simplified JSON format
  */
 const createEmailJson = (email: JmapEmailData): EmailJson => {
-  const htmlContent = extractHtmlContent(email);
-  const textContent = extractTextContent(email);
+  const htmlContent = O.toUndefined(extractHtmlContent(email));
+  const textContent = O.toUndefined(extractTextContent(email));
   
   return {
     id: email.id,
@@ -121,8 +122,8 @@ const createEmailJson = (email: JmapEmailData): EmailJson => {
     bcc: email.bcc,
     receivedAt: email.receivedAt,
     sentAt: email.sentAt,
-    htmlBody: htmlContent || undefined,
-    textBody: textContent || undefined,
+    htmlBody: htmlContent,
+    textBody: textContent,
     hasAttachment: email.hasAttachment,
   };
 };
