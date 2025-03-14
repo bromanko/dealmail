@@ -1,34 +1,21 @@
 import { command, extendType, multioption, option, string } from "cmd-ts";
 import * as E from "fp-ts/lib/Either.js";
-import * as O from "fp-ts/lib/Option.js";
 import * as TE from "fp-ts/lib/TaskEither.js";
 import { pipe } from "fp-ts/lib/function.js";
-import { JamClient } from "jmap-jam";
+import {
+  JmapError,
+  initializeJamClient,
+  getAccountId,
+  getMailboxes,
+  findMailboxByRole,
+  verifyEmails,
+  archiveEmail,
+  validateRequired,
+  ApiError,
+} from "../jmap.js";
+import type JamClient from "jmap-jam";
 
-// Define types for JMAP responses
-type MailboxRole =
-  | "inbox"
-  | "archive"
-  | "drafts"
-  | "flagged"
-  | "important"
-  | "junk"
-  | "sent"
-  | "subscribed"
-  | "trash"
-  | "all"
-  | null
-  | undefined;
-
-type Mailbox = {
-  id: string;
-  name: string;
-  role?: MailboxRole;
-  totalEmails: number;
-};
-
-// Define base error class
-class ArchiveError extends Error {
+class ArchiveError extends JmapError {
   constructor(message: string) {
     super(message);
     this.name = this.constructor.name;
@@ -36,23 +23,22 @@ class ArchiveError extends Error {
   }
 }
 
-class ApiError extends ArchiveError {
-  cause?: Error;
+// Validate email IDs
+const EmailIds = {
+  from: async (ids: string[]) => {
+    if (ids.length === 0) {
+      throw new ArchiveError("At least one email ID is required");
+    }
 
-  constructor(message: string, cause?: Error) {
-    super(`API error: ${message}`);
-    this.cause = cause;
-    Object.setPrototypeOf(this, ApiError.prototype);
-  }
-}
+    for (const id of ids) {
+      if (id.trim() === "") {
+        throw new ArchiveError("Email ID cannot be empty");
+      }
+    }
 
-const validateRequired = <T extends string>(
-  fieldName: string,
-  value: T,
-): E.Either<ArchiveError, T> =>
-  !value || value.trim() === ""
-    ? E.left(new ApiError(`${fieldName} is required`))
-    : E.right(value);
+    return ids;
+  },
+};
 
 const RequiredUsername = extendType(string, {
   displayName: "username",
@@ -79,231 +65,6 @@ const RequiredToken = extendType(string, {
     );
   },
 });
-
-// Validate email IDs
-const EmailIds = {
-  from: async (ids: string[]) => {
-    if (ids.length === 0) {
-      throw new ArchiveError("At least one email ID is required");
-    }
-
-    for (const id of ids) {
-      if (id.trim() === "") {
-        throw new ArchiveError("Email ID cannot be empty");
-      }
-    }
-
-    return ids;
-  },
-};
-
-/**
- * Initialize JMAP client
- */
-const initializeJamClient = (
-  password: string,
-): TE.TaskEither<ArchiveError, JamClient> =>
-  TE.tryCatch(
-    () => {
-      console.log("Initializing JMAP client...");
-      return Promise.resolve(
-        new JamClient({
-          sessionUrl: "https://api.fastmail.com/jmap/session",
-          bearerToken: password,
-        }),
-      );
-    },
-    (error) => {
-      return new ApiError(
-        `Failed to initialize JMAP client: ${error}`,
-        error instanceof Error ? error : undefined,
-      );
-    },
-  );
-
-/**
- * Get primary account ID
- */
-const getAccountId = (client: JamClient): TE.TaskEither<ArchiveError, string> =>
-  TE.tryCatch(
-    () => {
-      console.log("Getting account ID...");
-      return client.getPrimaryAccount();
-    },
-    (error) =>
-      new ApiError(
-        `Failed to get account ID: ${error}`,
-        error instanceof Error ? error : undefined,
-      ),
-  );
-
-/**
- * Get mailboxes (folders)
- */
-const getMailboxes = (
-  client: JamClient,
-  accountId: string,
-): TE.TaskEither<ArchiveError, ReadonlyArray<Mailbox>> =>
-  pipe(
-    TE.Do,
-    TE.tap(() => TE.right(console.log("Fetching mailboxes..."))),
-    TE.chain(() =>
-      TE.tryCatch(
-        () =>
-          client.request([
-            "Mailbox/get",
-            {
-              accountId,
-              properties: ["id", "name", "role", "totalEmails"],
-            },
-          ]),
-        (error) =>
-          new ApiError(
-            `Failed to fetch mailboxes: ${error}`,
-            error instanceof Error ? error : undefined,
-          ),
-      ),
-    ),
-    TE.map(([mailboxesResponse]) => mailboxesResponse.list || []),
-  );
-
-/**
- * Find archive mailbox
- */
-const findArchiveMailbox = (
-  mailboxes: ReadonlyArray<Mailbox>,
-): TE.TaskEither<ArchiveError, Mailbox> =>
-  pipe(
-    O.fromNullable(mailboxes.find((box: Mailbox) => box.role === "archive")),
-    TE.fromOption(() => new ApiError("Could not find archive folder")),
-    TE.map((archive) => {
-      console.log(
-        `Found archive folder: ${archive.name} with ${archive.totalEmails} emails`,
-      );
-      return archive;
-    }),
-  );
-
-/**
- * Find inbox mailbox
- */
-const findInboxMailbox = (
-  mailboxes: ReadonlyArray<Mailbox>,
-): TE.TaskEither<ArchiveError, Mailbox> =>
-  pipe(
-    O.fromNullable(mailboxes.find((box: Mailbox) => box.role === "inbox")),
-    TE.fromOption(() => new ApiError("Could not find inbox folder")),
-    TE.map((inbox) => {
-      console.log(
-        `Found inbox folder: ${inbox.name} with ${inbox.totalEmails} emails`,
-      );
-      return inbox;
-    }),
-  );
-
-/**
- * Verify emails exist
- */
-const verifyEmails = (
-  client: JamClient,
-  accountId: string,
-  emailIds: string[],
-): TE.TaskEither<ArchiveError, string[]> =>
-  pipe(
-    TE.tryCatch(
-      () =>
-        client.request([
-          "Email/get",
-          {
-            accountId,
-            ids: emailIds,
-            properties: ["id"],
-          },
-        ]),
-      (error) =>
-        new ApiError(
-          `Failed to verify emails: ${error}`,
-          error instanceof Error ? error : undefined,
-        ),
-    ),
-    TE.chain(([emailsResponse]) => {
-      if (emailsResponse.notFound && emailsResponse.notFound.length > 0) {
-        return TE.left(
-          new ApiError(
-            `Some emails were not found: ${emailsResponse.notFound.join(", ")}`,
-          ),
-        );
-      }
-      return TE.right(emailIds);
-    }),
-  );
-
-/**
- * Archive a single email
- */
-const archiveEmail = (
-  client: JamClient,
-  accountId: string,
-  emailId: string,
-  inboxId: string,
-  archiveId: string,
-): TE.TaskEither<ArchiveError, boolean> =>
-  pipe(
-    TE.tryCatch(
-      () => {
-        console.log(`Archiving email ${emailId}...`);
-        // Use any type for now to avoid type issues with jmap-jam
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const requestArgs: any = [
-          "Email/set",
-          {
-            accountId,
-            update: {
-              [emailId]: {
-                mailboxIds: {
-                  [inboxId]: null, // Remove from inbox
-                  [archiveId]: true, // Add to archive
-                },
-              },
-            },
-          },
-        ];
-        return client.request(requestArgs);
-      },
-      (error) =>
-        new ApiError(
-          `Failed to archive email ${emailId}: ${error}`,
-          error instanceof Error ? error : undefined,
-        ),
-    ),
-    TE.chain(([response]) => {
-      // Cast the response to a generic type to access the properties
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const emailSetResponse = response as any;
-
-      if (
-        emailSetResponse.updated &&
-        Object.keys(emailSetResponse.updated).includes(emailId)
-      ) {
-        console.log(`Successfully archived email ${emailId}`);
-        return TE.right(true);
-      }
-
-      if (
-        emailSetResponse.notUpdated &&
-        Object.keys(emailSetResponse.notUpdated).includes(emailId)
-      ) {
-        const error = emailSetResponse.notUpdated[emailId];
-        return TE.left(
-          new ApiError(
-            `Failed to archive email ${emailId}: ${JSON.stringify(error)}`,
-          ),
-        );
-      }
-
-      return TE.right(false);
-    }),
-  );
 
 /**
  * Archive multiple emails - moves from inbox to archive folder
@@ -387,10 +148,10 @@ export const archiveCommand = command({
       ),
       TE.chain(({ client, accountId, mailboxes }) =>
         pipe(
-          findInboxMailbox(mailboxes),
+          findMailboxByRole(mailboxes, "inbox"),
           TE.chain((inbox) =>
             pipe(
-              findArchiveMailbox(mailboxes),
+              findMailboxByRole(mailboxes, "archive"),
               TE.map((archive) => ({ client, accountId, inbox, archive })),
             ),
           ),

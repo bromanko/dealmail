@@ -25,11 +25,12 @@
 - Error handling: use typed errors with meaningful messages
 - Organize code in feature-based directories
 - Prefer functional programming patterns and using fp-ts
-- ONLY add comments for complex logic. Don't add comments for simple logic
+- ONLY add comments for complex logic. Don't add comments for simple logic. SERIOUSLY!
 - Avoid deeply nested callback chains. Prefer using fp-ts constructs such as `pipe`, `flow`, and `chain` to compose functions
 - Prefer arrow functions with implicit returns
 - Prefer functions that use a single pipe rather than mixing some imperative logic followed by a pipeline
 - When writing a function that uses Task or TaskEither do not also use async/await
+- Avoid using `any` type
 
 ## Project Structure
 - `src/` - Source code

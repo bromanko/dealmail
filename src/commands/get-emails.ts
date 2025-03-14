@@ -2,86 +2,24 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { command, extendType, option, string } from "cmd-ts";
 import * as E from "fp-ts/lib/Either.js";
-import * as O from "fp-ts/lib/Option.js";
 import * as TE from "fp-ts/lib/TaskEither.js";
 import { pipe } from "fp-ts/lib/function.js";
-import { JamClient } from "jmap-jam";
+import {
+  type JmapEmailData,
+  initializeJamClient,
+  getAccountId,
+  getMailboxes,
+  findMailboxByRole,
+  getEmails,
+  getEmailDetails,
+  extractHtmlContent,
+  extractTextContent,
+  validateRequired,
+  JmapError,
+  ApiError,
+} from "../jmap.js";
 
-// Define types for JMAP responses
-type MailboxRole =
-  | "inbox"
-  | "archive"
-  | "drafts"
-  | "flagged"
-  | "important"
-  | "junk"
-  | "sent"
-  | "subscribed"
-  | "trash"
-  | "all"
-  | null
-  | undefined;
-
-type Mailbox = {
-  id: string;
-  name: string;
-  role?: MailboxRole;
-  totalEmails: number;
-};
-
-type EmailAddress = {
-  name?: string;
-  email: string;
-};
-
-// Response type that always includes accountId and an ids array (possibly empty)
-type EmailQueryResponse = {
-  accountId: string;
-  ids: string[];
-  total?: number;
-  position?: number;
-  queryState?: string;
-  canCalculateChanges?: boolean;
-};
-
-// Email body part structure from JMAP
-type EmailBodyPart = {
-  partId?: string;
-  type?: string;
-  blobId?: string;
-  size?: number;
-  name?: string;
-  disposition?: string;
-};
-
-// The type as returned from JMAP API
-type JmapEmailData = {
-  id: string;
-  threadId: string;
-  mailboxIds: Record<string, boolean>;
-  keywords?: Record<string, boolean>;
-  from?: EmailAddress[];
-  to?: EmailAddress[];
-  cc?: EmailAddress[];
-  bcc?: EmailAddress[];
-  subject?: string; // Actually can be undefined in API response
-  receivedAt: string;
-  sentAt?: string;
-  preview?: string;
-  hasAttachment?: boolean;
-  bodyValues?: Record<string, { value: string; isTruncated?: boolean }>;
-  textBody?: EmailBodyPart[];
-  htmlBody?: EmailBodyPart[];
-};
-
-type EmailsDataResponse = {
-  list?: readonly JmapEmailData[];
-  accountId: string;
-  state: string;
-  notFound?: readonly string[];
-};
-
-class GetEmailsError extends Error {
+class GetEmailsError extends JmapError {
   constructor(message: string) {
     super(message);
     this.name = this.constructor.name;
@@ -120,16 +58,6 @@ class DirectoryCreationFailedError extends GetEmailsError {
     this.path = path;
     this.cause = cause;
     Object.setPrototypeOf(this, DirectoryCreationFailedError.prototype);
-  }
-}
-
-class ApiError extends GetEmailsError {
-  cause?: Error;
-
-  constructor(message: string, cause?: Error) {
-    super(`API error: ${message}`);
-    this.cause = cause;
-    Object.setPrototypeOf(this, ApiError.prototype);
   }
 }
 
@@ -188,14 +116,6 @@ const OutputDirectory = extendType(string, {
   },
 });
 
-const validateRequired = <T extends string>(
-  fieldName: string,
-  value: T,
-): E.Either<GetEmailsError, T> =>
-  !value || value.trim() === ""
-    ? E.left(new ApiError(`${fieldName} is required`))
-    : E.right(value);
-
 const RequiredUsername = extendType(string, {
   displayName: "username",
   description: "Fastmail username",
@@ -249,231 +169,6 @@ const EmailLimitType = extendType(string, {
     );
   },
 });
-
-/**
- * Initialize JMAP client
- */
-const initializeJamClient = (
-  password: string,
-): TE.TaskEither<GetEmailsError, JamClient> =>
-  TE.tryCatch(
-    () => {
-      console.log("Initializing JMAP client...");
-      return Promise.resolve(
-        new JamClient({
-          sessionUrl: "https://api.fastmail.com/jmap/session",
-          bearerToken: password,
-        }),
-      );
-    },
-    (error) => {
-      return new ApiError(
-        `Failed to initialize JMAP client: ${error}`,
-        error instanceof Error ? error : undefined,
-      );
-    },
-  );
-
-/**
- * Get primary account ID
- */
-const getAccountId = (
-  client: JamClient,
-): TE.TaskEither<GetEmailsError, string> =>
-  TE.tryCatch(
-    () => {
-      console.log("Getting account ID...");
-      return client.getPrimaryAccount();
-    },
-    (error) =>
-      new ApiError(
-        `Failed to get account ID: ${error}`,
-        error instanceof Error ? error : undefined,
-      ),
-  );
-
-/**
- * Get mailboxes (folders)
- */
-const getMailboxes = (
-  client: JamClient,
-  accountId: string,
-): TE.TaskEither<GetEmailsError, ReadonlyArray<Mailbox>> =>
-  pipe(
-    TE.Do,
-    TE.tap(() => TE.right(console.log("Fetching mailboxes..."))),
-    TE.chain(() =>
-      TE.tryCatch(
-        () =>
-          client.request([
-            "Mailbox/get",
-            {
-              accountId,
-              properties: ["id", "name", "role", "totalEmails"],
-            },
-          ]),
-        (error) =>
-          new ApiError(
-            `Failed to fetch mailboxes: ${error}`,
-            error instanceof Error ? error : undefined,
-          ),
-      ),
-    ),
-    TE.map(([mailboxesResponse]) => mailboxesResponse.list || []),
-  );
-
-/**
- * Find inbox in mailboxes
- */
-const findInbox = (
-  mailboxes: ReadonlyArray<Mailbox>,
-): TE.TaskEither<GetEmailsError, Mailbox> =>
-  pipe(
-    O.fromNullable(mailboxes.find((box: Mailbox) => box.role === "inbox")),
-    TE.fromOption(() => new ApiError("Could not find inbox folder")),
-    TE.map((inbox) => {
-      console.log(
-        `Found inbox: ${inbox.name} with ${inbox.totalEmails} emails`,
-      );
-      return inbox;
-    }),
-  );
-
-/**
- * Get emails from inbox
- */
-const getEmails = (
-  client: JamClient,
-  accountId: string,
-  inboxId: string,
-  limit: number,
-): TE.TaskEither<GetEmailsError, EmailQueryResponse> => {
-  console.log("Fetching emails...");
-
-  // Convert Infinity to undefined for API which expects a number or undefined
-  const apiLimit = Number.isFinite(limit) ? limit : undefined;
-
-  return pipe(
-    TE.tryCatch(
-      () =>
-        client.request([
-          "Email/query",
-          {
-            accountId,
-            filter: {
-              inMailbox: inboxId,
-            },
-            sort: [{ property: "receivedAt", isAscending: false }],
-            limit: apiLimit,
-            calculateTotal: true,
-          },
-        ]),
-      (error) =>
-        new ApiError(
-          `Failed to query emails: ${error}`,
-          error instanceof Error ? error : undefined,
-        ),
-    ),
-    TE.map(([emailsResponse]) => {
-      // Normalize the response to ensure it has the required structure
-      const normalizedResponse: EmailQueryResponse = {
-        ...emailsResponse,
-        accountId,
-        ids: emailsResponse.ids || [], // Ensure the ids property is always an array
-      };
-
-      if (!normalizedResponse.ids.length) {
-        console.log("No emails found in inbox");
-      } else {
-        console.log(`Found ${normalizedResponse.ids.length} emails`);
-      }
-
-      return normalizedResponse;
-    }),
-  );
-};
-
-/**
- * Get detailed email data
- */
-const getEmailDetails = (
-  client: JamClient,
-  accountId: string,
-  emailIds: string[],
-): TE.TaskEither<GetEmailsError, EmailsDataResponse> => {
-  if (emailIds.length === 0) {
-    return TE.right({ list: [], accountId, state: "" });
-  }
-
-  return pipe(
-    TE.tryCatch(
-      () =>
-        client.request([
-          "Email/get",
-          {
-            accountId,
-            ids: emailIds,
-            properties: [
-              "id",
-              "threadId",
-              "mailboxIds",
-              "keywords",
-              "from",
-              "to",
-              "cc",
-              "bcc",
-              "subject",
-              "receivedAt",
-              "sentAt",
-              "preview",
-              "hasAttachment",
-              "bodyValues",
-              "textBody",
-              "htmlBody",
-            ],
-            fetchTextBodyValues: true,
-            fetchHTMLBodyValues: true,
-          },
-        ]),
-      (error) =>
-        new ApiError(
-          `Failed to get email details: ${error}`,
-          error instanceof Error ? error : undefined,
-        ),
-    ),
-    TE.map(([emailsData]) => emailsData),
-  );
-};
-
-/**
- * Extract raw content (HTML or text) from email parts
- */
-const extractHtmlContent = (email: JmapEmailData): string | null => {
-  // Try to get HTML content
-  if (email.htmlBody && email.htmlBody.length > 0 && email.bodyValues) {
-    for (const part of email.htmlBody) {
-      if (part.partId && email.bodyValues[part.partId]) {
-        return email.bodyValues[part.partId].value;
-      }
-    }
-  }
-  return null;
-};
-
-/**
- * Extract text content from email parts
- */
-const extractTextContent = (email: JmapEmailData): string | null => {
-  // Get text content
-  if (email.textBody && email.textBody.length > 0 && email.bodyValues) {
-    for (const part of email.textBody) {
-      if (part.partId && email.bodyValues[part.partId]) {
-        return email.bodyValues[part.partId].value;
-      }
-    }
-  }
-  return null;
-};
 
 /**
  * Process and extract email content for storage
@@ -641,7 +336,7 @@ export const getEmailsCommand = command({
       ),
       TE.chain(({ client, accountId, mailboxes }) =>
         pipe(
-          findInbox(mailboxes),
+          findMailboxByRole(mailboxes, "inbox"),
           TE.map((inbox) => ({ client, accountId, inbox })),
         ),
       ),
