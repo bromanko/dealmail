@@ -6,8 +6,8 @@ on:
       - "v*"
 
 jobs:
-  build:
-    name: Build and Release
+  build-linux:
+    name: Build and Release for Linux
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -18,35 +18,126 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
 
-      - name: Build and test
+      - name: Set version from tag
         run: |
-          nix develop --command bash -c '
-            # Install dependencies
-            pnpm install
+          # Extract version from tag (remove 'v' prefix)
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          
+          # Update version in package.json
+          sed -i "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" package.json
+          
+          # Update version in nix/dealmail.nix
+          sed -i "s/version = \".*\"/version = \"$VERSION\"/" nix/dealmail.nix
 
-            # Run tests
-            pnpm test
-
-            # Build
-            pnpm run build
-          '
-
-      - name: Package for Linux
+      - name: Run tests
         run: |
-          nix develop --command bash -c '
-            mkdir -p dist-packages/linux
-            cp -r dist/* dist-packages/linux/
-            cp package.json dist-packages/linux/
-            cd dist-packages/linux
-            npm pkg set type="commonjs"
-            cd ..
-            tar -czf dealmail-linux.tar.gz linux
-          '
+          nix develop --command bash -c 'pnpm install && pnpm test'
+
+      - name: Build with Nix for Linux
+        run: |
+          # Build the package using Nix
+          nix build
+          
+          # Get architecture
+          ARCH=$(uname -m)
+          
+          # Create a distribution directory
+          mkdir -p dist-packages
+
+          # Package build with version and architecture in the name
+          cp -r result dist-packages/dealmail-$VERSION-linux-$ARCH
+          cd dist-packages
+          tar -czf dealmail-$VERSION-linux-$ARCH.tar.gz dealmail-$VERSION-linux-$ARCH
+          cd ..
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-package
+          path: dist-packages/dealmail-${{ env.VERSION }}-linux-*.tar.gz
+          retention-days: 1
+
+  build-macos:
+    name: Build and Release for macOS
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Set version from tag
+        run: |
+          # Extract version from tag (remove 'v' prefix)
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          
+          # Update version in package.json
+          sed -i '' "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" package.json
+          
+          # Update version in nix/dealmail.nix
+          sed -i '' "s/version = \".*\"/version = \"$VERSION\"/" nix/dealmail.nix
+
+      - name: Build with Nix for macOS
+        run: |
+          # Build the package using Nix
+          nix build
+          
+          # Get architecture
+          ARCH=$(uname -m)
+          
+          # Create a distribution directory
+          mkdir -p dist-packages
+
+          # Package build with version and architecture in the name
+          cp -r result dist-packages/dealmail-$VERSION-macos-$ARCH
+          cd dist-packages
+          tar -czf dealmail-$VERSION-macos-$ARCH.tar.gz dealmail-$VERSION-macos-$ARCH
+          cd ..
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-package
+          path: dist-packages/dealmail-${{ env.VERSION }}-macos-*.tar.gz
+          retention-days: 1
+
+  create-release:
+    name: Create GitHub Release
+    needs: [build-linux, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-package
+          path: dist-packages
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-package
+          path: dist-packages
+
+      - name: List artifacts
+        run: |
+          ls -la dist-packages
+
+      - name: Extract version from tag
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            dist-packages/dealmail-linux.tar.gz
+            dist-packages/dealmail-${{ env.VERSION }}-*.tar.gz
           draft: false
           prerelease: false
