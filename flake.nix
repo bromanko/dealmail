@@ -16,15 +16,20 @@
       system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        dealmail = pkgs.callPackage ./nix/dealmail.nix { };
       in
       {
+        packages = {
+          dealmail = dealmail;
+          default = dealmail;
+        };
+
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             nodejs_latest
             nodePackages.typescript
             nodePackages.ts-node
-            nodePackages.pnpm
-
+            pnpm_9
           ];
         };
       }
