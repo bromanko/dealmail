@@ -8,7 +8,13 @@ import {
 import * as E from "fp-ts/lib/Either.js";
 import * as TE from "fp-ts/lib/TaskEither.js";
 import { pipe } from "fp-ts/lib/function.js";
+import {
+  FilesystemError,
+  readJsonFile,
+  writeJsonFile,
+} from "../filesystem.js";
 
+// Define a base error class for the extract command
 class ExtractError extends Error {
   constructor(message: string) {
     super(message);
@@ -44,30 +50,18 @@ class GeminiError extends ExtractError {
   }
 }
 
-class FileError extends ExtractError {
-  cause?: Error;
-  path: string;
-
-  constructor(path: string, message: string, cause?: Error) {
-    super(`File error with ${path}: ${message}`);
-    this.path = path;
-    this.cause = cause;
-    Object.setPrototypeOf(this, FileError.prototype);
-  }
-}
-
 const PathValidator = {
   validatePaths: async (paths: string[]) => {
     if (paths.length === 0) {
       throw new ExtractError("At least one path is required");
     }
-
+    
     for (const path of paths) {
       if (path.trim() === "") {
         throw new ExtractError("Path cannot be empty");
       }
     }
-
+    
     return paths;
   },
 };
@@ -202,48 +196,23 @@ interface DealInfo {
 }
 
 /**
- * Read and parse a JSON file
+ * Interface for the email JSON structure
  */
-const readJsonFile = <T>(filePath: string): TE.TaskEither<ExtractError, T> =>
-  pipe(
-    TE.tryCatch(
-      () => fs.readFile(filePath, "utf8"),
-      (error) =>
-        new FileError(
-          filePath,
-          `Failed to read file: ${error}`,
-          error instanceof Error ? error : undefined,
-        ),
-    ),
-    TE.chain((content) =>
-      TE.tryCatch(
-        () => Promise.resolve(JSON.parse(content) as T),
-        (error) =>
-          new FileError(
-            filePath,
-            `Failed to parse JSON: ${error}`,
-            error instanceof Error ? error : undefined,
-          ),
-      ),
-    ),
-  );
-
-/**
- * Write JSON data to a file
- */
-const writeJsonFile = <T>(
-  filePath: string,
-  data: T,
-): TE.TaskEither<ExtractError, void> =>
-  TE.tryCatch(
-    () => fs.writeFile(filePath, JSON.stringify(data, null, 2)),
-    (error) =>
-      new FileError(
-        filePath,
-        `Failed to write file: ${error}`,
-        error instanceof Error ? error : undefined,
-      ),
-  );
+interface EmailJsonData {
+  id: string;
+  threadId: string;
+  subject?: string;
+  from?: Array<{ name?: string; email: string }>;
+  to?: Array<{ name?: string; email: string }>;
+  cc?: Array<{ name?: string; email: string }>;
+  bcc?: Array<{ name?: string; email: string }>;
+  receivedAt: string;
+  sentAt?: string;
+  htmlBody?: string;
+  textBody?: string;
+  hasAttachment?: boolean;
+  dealInfo?: DealInfo;
+}
 
 /**
  * Process a single image with Gemini Vision using structured output
@@ -293,6 +262,7 @@ const processImageWithGemini = (
 
           const text = result.response.text();
 
+          // Parse the JSON response
           try {
             return JSON.parse(text) as DealInfo;
           } catch (err) {
@@ -313,40 +283,22 @@ const processImageWithGemini = (
 };
 
 /**
- * Interface to track image and file path pairs
+ * Process a single email file with extracted deal information
  */
-interface ImageFilePair {
-  imagePath: string;
-  filePath: string;
-}
-
-/**
- * Interface for the email JSON structure
- */
-interface EmailJsonData {
-  id: string;
-  threadId: string;
-  subject?: string;
-  from?: Array<{ name?: string; email: string }>;
-  to?: Array<{ name?: string; email: string }>;
-  cc?: Array<{ name?: string; email: string }>;
-  bcc?: Array<{ name?: string; email: string }>;
-  receivedAt: string;
-  sentAt?: string;
-  htmlBody?: string;
-  textBody?: string;
-  hasAttachment?: boolean;
-  dealInfo?: DealInfo;
-}
-
 const processEmailFile = (
   apiKey: string,
-  pair: ImageFilePair,
+  pair: { imagePath: string; filePath: string },
 ): TE.TaskEither<ExtractError, void> => {
   return pipe(
     // Read the original email JSON file
     readJsonFile<EmailJsonData>(pair.filePath),
-    TE.chain((emailData) =>
+    TE.mapLeft(
+      (error) =>
+        new ExtractError(
+          `Failed to read or parse email JSON file: ${error.message}`,
+        ),
+    ),
+    TE.chain((emailData) => 
       pipe(
         // Process the image with Gemini
         processImageWithGemini(apiKey, pair.imagePath),
@@ -356,9 +308,17 @@ const processEmailFile = (
             ...emailData,
             dealInfo,
           };
-
+          
           // Write the updated email back to the JSON file
-          return writeJsonFile(pair.filePath, updatedEmailData);
+          return pipe(
+            writeJsonFile(pair.filePath, updatedEmailData),
+            TE.mapLeft(
+              (error) =>
+                new ExtractError(
+                  `Failed to write updated email data: ${error.message}`,
+                ),
+            ),
+          );
         }),
       ),
     ),
@@ -371,31 +331,30 @@ const processEmailFile = (
 const validateImageFilePairs = (
   images: string[],
   files: string[],
-): E.Either<ExtractError, ImageFilePair[]> => {
+): E.Either<ExtractError, Array<{ imagePath: string; filePath: string }>> => {
   if (images.length !== files.length) {
     return E.left(
       new ExtractError(
-        `Number of image paths (${images.length}) does not match number of file paths (${files.length}). Each --image must have a corresponding --file.`,
-      ),
+        `Number of image paths (${images.length}) does not match number of file paths (${files.length}). Each --image must have a corresponding --file.`
+      )
     );
   }
-
-  const pairs: ImageFilePair[] = [];
+  
+  const pairs: Array<{ imagePath: string; filePath: string }> = [];
   for (let i = 0; i < images.length; i++) {
     pairs.push({
       imagePath: images[i],
       filePath: files[i],
     });
   }
-
+  
   return E.right(pairs);
 };
 
 // Extract command definition
 export const extractCommand = command({
   name: "extract",
-  description:
-    "Extract deal information from email images and update corresponding JSON files",
+  description: "Extract deal information from email images and update corresponding JSON files",
   args: {
     images: multioption({
       type: {
@@ -413,8 +372,7 @@ export const extractCommand = command({
       },
       long: "file",
       short: "f",
-      description:
-        "Path to email JSON file to update (can be specified multiple times, must match --image count)",
+      description: "Path to email JSON file to update (can be specified multiple times, must match --image count)",
     }),
     apiKey: option({
       type: ApiKey,
@@ -425,9 +383,7 @@ export const extractCommand = command({
     }),
   },
   handler: async ({ images, files, apiKey }) => {
-    console.log(
-      `Processing ${images.length} images with corresponding JSON files...`,
-    );
+    console.log(`Processing ${images.length} images with corresponding JSON files...`);
 
     // Validate image-file pairs
     const pairsEither = validateImageFilePairs(images, files);
@@ -435,9 +391,9 @@ export const extractCommand = command({
       console.error(`ERROR: ${pairsEither.left.message}`);
       return 1;
     }
-
+    
     const pairs = pairsEither.right;
-
+    
     // Process each image and update the corresponding file
     const processAllPairs = pipe(
       pairs.reduce(
@@ -448,9 +404,7 @@ export const extractCommand = command({
               pipe(
                 processEmailFile(apiKey, pair),
                 TE.map(() => {
-                  console.log(
-                    `Updated file: ${pair.filePath} with extracted deal information`,
-                  );
+                  console.log(`Updated file: ${pair.filePath} with extracted deal information`);
                   return count + 1;
                 }),
               ),

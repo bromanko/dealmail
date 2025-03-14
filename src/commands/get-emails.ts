@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { command, extendType, option, string } from "cmd-ts";
+import { command, option, extendType, string } from "cmd-ts";
 import * as E from "fp-ts/lib/Either.js";
 import * as TE from "fp-ts/lib/TaskEither.js";
 import { pipe } from "fp-ts/lib/function.js";
@@ -18,7 +18,12 @@ import {
   JmapError,
   ApiError,
 } from "../jmap.js";
+import {
+  OutputDirectory,
+  FileError,
+} from "../filesystem.js";
 
+// Define the GetEmailsError class as a subclass of JmapError
 class GetEmailsError extends JmapError {
   constructor(message: string) {
     super(message);
@@ -26,95 +31,6 @@ class GetEmailsError extends JmapError {
     Object.setPrototypeOf(this, GetEmailsError.prototype);
   }
 }
-
-class PathNotFoundError extends GetEmailsError {
-  path: string;
-
-  constructor(path: string) {
-    super(`Path doesn't exist: ${path}`);
-    this.path = path;
-    Object.setPrototypeOf(this, PathNotFoundError.prototype);
-  }
-}
-
-class NotADirectoryError extends GetEmailsError {
-  path: string;
-
-  constructor(path: string) {
-    super(`Path exists but is not a directory: ${path}`);
-    this.path = path;
-    Object.setPrototypeOf(this, NotADirectoryError.prototype);
-  }
-}
-
-class DirectoryCreationFailedError extends GetEmailsError {
-  path: string;
-  cause?: Error;
-
-  constructor(path: string, cause?: Error) {
-    super(
-      `Failed to create directory ${path}${cause ? `: ${cause.message}` : ""}`,
-    );
-    this.path = path;
-    this.cause = cause;
-    Object.setPrototypeOf(this, DirectoryCreationFailedError.prototype);
-  }
-}
-
-const isDirectory = (path: string): TE.TaskEither<GetEmailsError, string> =>
-  pipe(
-    TE.tryCatch(
-      () => fs.stat(path),
-      (err) =>
-        new ApiError(
-          String(err),
-          err instanceof Error ? err : undefined,
-        ) as GetEmailsError,
-    ),
-    TE.chain((stats) => {
-      if (stats.isDirectory()) {
-        return TE.right(path);
-      }
-      return TE.left<GetEmailsError, string>(new NotADirectoryError(path));
-    }),
-  );
-
-const createDirectoryIfNotExists = (
-  dirPath: string,
-): TE.TaskEither<GetEmailsError, string> =>
-  pipe(
-    TE.tryCatch(
-      () => fs.access(dirPath),
-      () => new PathNotFoundError(dirPath),
-    ),
-    TE.chain(() => isDirectory(dirPath)),
-    TE.orElse(() =>
-      TE.tryCatch(
-        () => fs.mkdir(dirPath, { recursive: true }),
-        (err) =>
-          new DirectoryCreationFailedError(
-            dirPath,
-            err instanceof Error ? err : undefined,
-          ),
-      ),
-    ),
-    TE.map(() => dirPath),
-  );
-
-const OutputDirectory = extendType(string, {
-  displayName: "output-dir",
-  description: "Directory to save output (will be created if it doesn't exist)",
-  async from(dirPath) {
-    return pipe(
-      dirPath,
-      path.resolve,
-      createDirectoryIfNotExists,
-      TE.getOrElse((error) => {
-        throw error;
-      }),
-    )();
-  },
-});
 
 const RequiredUsername = extendType(string, {
   displayName: "username",
@@ -194,7 +110,7 @@ interface EmailJson {
 const createEmailJson = (email: JmapEmailData): EmailJson => {
   const htmlContent = extractHtmlContent(email);
   const textContent = extractTextContent(email);
-
+  
   return {
     id: email.id,
     threadId: email.threadId,
@@ -220,20 +136,22 @@ const saveEmailToFile = (
 ): TE.TaskEither<GetEmailsError, string> => {
   const emailJson = createEmailJson(email);
   const filePath = path.join(outputDir, `email-${email.id}.json`);
-
+  
   return pipe(
     TE.tryCatch(
       () => fs.writeFile(filePath, JSON.stringify(emailJson, null, 2)),
-      (error) =>
+      (error) => 
         new ApiError(
           `Failed to write email to file: ${error}`,
-          error instanceof Error ? error : undefined,
-        ),
+          error instanceof Error ? error : undefined
+        )
     ),
     TE.map(() => {
-      console.log(`Saved email ${email.id}: ${email.subject || "No Subject"}`);
+      console.log(
+        `Saved email ${email.id}: ${email.subject || "No Subject"}`
+      );
       return filePath;
-    }),
+    })
   );
 };
 

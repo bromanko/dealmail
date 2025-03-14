@@ -4,48 +4,18 @@ import { command, extendType, multioption, option, string } from "cmd-ts";
 import * as TE from "fp-ts/lib/TaskEither.js";
 import { pipe } from "fp-ts/lib/function.js";
 import puppeteer from "puppeteer";
+import {
+  FilesystemError,
+  OutputDirectory,
+  FileError,
+  readJsonFile,
+} from "../filesystem.js";
 
 class GetImageError extends Error {
   constructor(message: string) {
     super(message);
     this.name = this.constructor.name;
     Object.setPrototypeOf(this, GetImageError.prototype);
-  }
-}
-
-class FileNotFoundError extends GetImageError {
-  path: string;
-
-  constructor(path: string) {
-    super(`File doesn't exist: ${path}`);
-    this.path = path;
-    Object.setPrototypeOf(this, FileNotFoundError.prototype);
-  }
-}
-
-class FileReadError extends GetImageError {
-  path: string;
-  cause?: Error;
-
-  constructor(path: string, cause?: Error) {
-    super(`Failed to read file: ${path}${cause ? `: ${cause.message}` : ""}`);
-    this.path = path;
-    this.cause = cause;
-    Object.setPrototypeOf(this, FileReadError.prototype);
-  }
-}
-
-class OutputDirError extends GetImageError {
-  path: string;
-  cause?: Error;
-
-  constructor(path: string, cause?: Error) {
-    super(
-      `Failed to access output directory ${path}${cause ? `: ${cause.message}` : ""}`,
-    );
-    this.path = path;
-    this.cause = cause;
-    Object.setPrototypeOf(this, OutputDirError.prototype);
   }
 }
 
@@ -59,93 +29,59 @@ class ScreenshotError extends GetImageError {
   }
 }
 
-// Email data type as stored in JSON files
-interface EmailData {
+interface EmailJson {
   id: string;
+  threadId: string;
   subject?: string;
   from?: Array<{ name?: string; email: string }>;
   to?: Array<{ name?: string; email: string }>;
   cc?: Array<{ name?: string; email: string }>;
+  bcc?: Array<{ name?: string; email: string }>;
   receivedAt: string;
+  sentAt?: string;
   htmlBody?: string;
   textBody?: string;
-  bodyValues?: Record<string, { value: string; isTruncated?: boolean }>;
+  hasAttachment?: boolean;
 }
 
-// Output directory validation
-const isDirectory = (path: string): TE.TaskEither<GetImageError, string> =>
-  pipe(
-    TE.tryCatch(
-      () => fs.stat(path),
-      (error) => new FileNotFoundError(path),
-    ),
-    TE.chain((stats) =>
-      stats.isDirectory() ? TE.right(path) : TE.left(new OutputDirError(path)),
-    ),
-  );
+type EmailJsonPath = string;
 
-const createDirectoryIfNotExists = (
-  dirPath: string,
-): TE.TaskEither<GetImageError, string> =>
-  pipe(
-    TE.tryCatch(
-      () => fs.mkdir(dirPath, { recursive: true }),
-      (error) =>
-        new OutputDirError(dirPath, error instanceof Error ? error : undefined),
-    ),
-    TE.map(() => dirPath),
-  );
-
-const OutputDirectory = extendType(string, {
-  displayName: "output-dir",
-  description: "Directory to save output (will be created if it doesn't exist)",
-  async from(dirPath) {
-    return pipe(
-      dirPath,
-      path.resolve,
-      createDirectoryIfNotExists,
-      TE.getOrElse((error) => {
-        throw error;
-      }),
-    )();
-  },
-});
-
-// File path validation
-const EmailJsonPath = extendType(string, {
-  displayName: "email-json-file",
-  description: "Path to email JSON file",
-  async from(value) {
-    const filePath = path.resolve(value);
-    try {
-      await fs.access(filePath);
-      return filePath;
-    } catch (error) {
-      throw new FileNotFoundError(filePath);
+// Custom type for validating email JSON file paths
+const EmailJsonPaths = {
+  from: async (paths: string[]) => {
+    if (paths.length === 0) {
+      throw new GetImageError("At least one email JSON file path is required");
     }
+
+    for (const path of paths) {
+      try {
+        await fs.access(path);
+      } catch (error) {
+        throw new GetImageError(`File not found: ${path}`);
+      }
+    }
+
+    return paths;
   },
-});
-
-// Helper for multi-paths
-const validatePaths = async (paths: string[]): Promise<string[]> => {
-  // Check if we have at least one path
-  if (paths.length === 0) {
-    throw new GetImageError("At least one file path is required");
-  }
-
-  // Validate each path
-  const validatedPaths: string[] = [];
-  for (const path of paths) {
-    const validPath = await EmailJsonPath.from(path);
-    validatedPaths.push(validPath);
-  }
-
-  return validatedPaths;
 };
 
-// Multi-file path type
-const EmailJsonFiles = {
-  from: validatePaths,
+// Validate that paths exist and are readable
+const validatePaths = (
+  paths: EmailJsonPath[],
+): TE.TaskEither<GetImageError, ReadonlyArray<EmailJsonPath>> => {
+  const validatePath = (
+    path: EmailJsonPath,
+  ): TE.TaskEither<GetImageError, EmailJsonPath> =>
+    pipe(
+      TE.tryCatch(
+        () => fs.access(path),
+        () => new GetImageError(`File doesn't exist: ${path}`),
+      ),
+      TE.map(() => path),
+    );
+
+  // Validate each path and collect results
+  return TE.sequenceArray(paths.map(validatePath));
 };
 
 /**
@@ -177,7 +113,7 @@ const createPage = (
   );
 
 /**
- * Set the content of the page
+ * Set HTML content in the page
  */
 const setPageContent = (
   page: puppeteer.Page,
@@ -193,20 +129,13 @@ const setPageContent = (
   );
 
 /**
- * Set viewport to a reasonable size
+ * Set viewport size
  */
 const setViewport = (
   page: puppeteer.Page,
 ): TE.TaskEither<GetImageError, puppeteer.Page> =>
   TE.tryCatch(
-    () => {
-      page.setViewport({
-        width: 1280,
-        height: 800,
-        deviceScaleFactor: 1,
-      });
-      return Promise.resolve(page);
-    },
+    () => page.setViewport({ width: 1200, height: 800 }).then(() => page),
     (error) =>
       new ScreenshotError(
         `Failed to set viewport: ${error}`,
@@ -288,226 +217,75 @@ const takeScreenshot = (
   );
 
 /**
- * Create metadata HTML block (common across all email types)
+ * Process an email JSON file to generate a screenshot
  */
-const getMetadataHtml = (email: EmailData): string => `
-  <div class="email-metadata">
-    <h2>${email.subject || "No Subject"}</h2>
-    <p><strong>From:</strong> ${email.from ? email.from.map((addr) => addr.name || addr.email).join(", ") : "Unknown"}</p>
-    <p><strong>To:</strong> ${email.to ? email.to.map((addr) => addr.name || addr.email).join(", ") : "Unknown"}</p>
-    ${email.cc && email.cc.length > 0 ? `<p><strong>CC:</strong> ${email.cc.map((addr) => addr.name || addr.email).join(", ")}</p>` : ""}
-    <p><strong>Date:</strong> ${new Date(email.receivedAt).toLocaleString()}</p>
-  </div>
-`;
-
-/**
- * Get common styles for all templated email types
- */
-const getCommonStyles = (): string => `
-  <style>
-    body { font-family: Arial, sans-serif; margin: 20px; }
-    .email-metadata { background: #f5f5f5; padding: 10px; margin-bottom: 20px; border-radius: 5px; }
-    .email-content { padding: 10px; }
-  </style>
-`;
-
-/**
- * Extract raw content (HTML or text) from email data
- */
-const extractRawContent = (
-  email: EmailData,
-): { content: string; isHtml: boolean } => {
-  // If we already have processed HTML content
-  if (email.htmlBody) {
-    return {
-      content: email.htmlBody,
-      isHtml: true,
-    };
-  }
-
-  // If we already have processed text content
-  if (email.textBody) {
-    return {
-      content: email.textBody,
-      isHtml: false,
-    };
-  }
-
-  // For structured data from JMAP API
-  if (email.bodyValues) {
-    // Find any HTML content first
-    for (const key in email.bodyValues) {
-      if (key.toLowerCase().includes("html")) {
-        return {
-          content: email.bodyValues[key].value,
-          isHtml: true,
-        };
-      }
-    }
-
-    // Fall back to any text content
-    for (const key in email.bodyValues) {
-      return {
-        content: email.bodyValues[key].value,
-        isHtml: false,
-      };
-    }
-  }
-
-  // No content found
-  return {
-    content: "",
-    isHtml: false,
-  };
-};
-
-/**
- * Generate full HTML for rendering an email
- */
-const generateEmailHtml = (email: EmailData): string => {
-  const { content, isHtml } = extractRawContent(email);
-  const metadataHtml = getMetadataHtml(email);
-  const commonStyles = getCommonStyles();
-  const subject = email.subject || "No Subject";
-
-  // Special case: If email already contains full HTML document structure, use it directly
-  if (
-    isHtml &&
-    (content.trim().toLowerCase().startsWith("<!doctype") ||
-      content.trim().toLowerCase().startsWith("<html"))
-  ) {
-    return content;
-  }
-
-  // Create appropriate HTML based on content type
-  if (content === "") {
-    // No content available
-    return `<!DOCTYPE html>
-    <html>
-      <head>
-        <meta charset="utf-8">
-        <title>${subject}</title>
-        ${commonStyles}
-      </head>
-      <body>
-        ${metadataHtml}
-        <div class="email-content">
-          <p>No content available for this email.</p>
-        </div>
-      </body>
-    </html>`;
-  }
-
-  if (!isHtml) {
-    // Plain text content
-    return `<!DOCTYPE html>
-    <html>
-      <head>
-        <meta charset="utf-8">
-        <title>${subject}</title>
-        ${commonStyles}
-      </head>
-      <body>
-        ${metadataHtml}
-        <div class="email-content">
-          <pre style="font-family: sans-serif; white-space: pre-wrap;">${content}</pre>
-        </div>
-      </body>
-    </html>`;
-  }
-
-  // HTML content (fragment)
-  return `<!DOCTYPE html>
-  <html>
-    <head>
-      <meta charset="utf-8">
-      <title>${subject}</title>
-      ${commonStyles}
-    </head>
-    <body>
-      ${metadataHtml}
-      <div class="email-content">
-        ${content}
-      </div>
-    </body>
-  </html>`;
-};
-
-/**
- * Read email JSON file
- */
-const readEmailFile = (
-  filePath: string,
-): TE.TaskEither<GetImageError, EmailData> =>
-  pipe(
-    TE.tryCatch(
-      () => fs.readFile(filePath, "utf-8"),
-      (error) =>
-        new FileReadError(filePath, error instanceof Error ? error : undefined),
-    ),
-    TE.chain((content) => {
-      try {
-        return TE.right(JSON.parse(content) as EmailData);
-      } catch (error) {
-        return TE.left(
-          new FileReadError(
-            filePath,
-            new Error(
-              `Invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
-            ),
-          ),
-        );
-      }
-    }),
-  );
-
-/**
- * Create a screenshot from an email JSON file
- */
-const generateImageFromEmailFile = (
-  emailFilePath: string,
+const processEmailFile = (
+  inputPath: EmailJsonPath,
   outputDir: string,
 ): TE.TaskEither<GetImageError, string> =>
   pipe(
-    readEmailFile(emailFilePath),
+    readJsonFile<EmailJson>(inputPath),
+    TE.mapLeft(
+      (error) =>
+        new GetImageError(
+          `Failed to read or parse email JSON file: ${error.message}`,
+        ),
+    ),
     TE.chain((emailData) => {
-      const emailId = emailData.id;
-      const imagePath = path.join(outputDir, `email-${emailId}.png`);
-      const html = generateEmailHtml(emailData);
+      if (!emailData.htmlBody) {
+        return TE.left(
+          new GetImageError(`Email JSON file has no HTML content: ${inputPath}`),
+        );
+      }
+
+      const outputFileName = `${path.basename(
+        inputPath,
+        path.extname(inputPath),
+      )}.png`;
+      const outputPath = path.join(outputDir, outputFileName);
 
       return pipe(
-        takeScreenshot(html, imagePath),
-        TE.map((filePath) => {
-          console.log(
-            `Generated image for ${emailId}: ${emailData.subject || "No Subject"}`,
-          );
-          return filePath;
-        }),
+        takeScreenshot(emailData.htmlBody, outputPath),
+        TE.tap(() =>
+          TE.right(
+            console.log(
+              `Generated screenshot for email: ${
+                emailData.subject || "No Subject"
+              }`,
+            ),
+          ),
+        ),
       );
     }),
   );
 
 /**
- * Process multiple email files
+ * Process multiple email JSON files to generate screenshots
  */
 const processEmailFiles = (
-  filePaths: string[],
+  inputPaths: ReadonlyArray<EmailJsonPath>,
   outputDir: string,
 ): TE.TaskEither<GetImageError, number> => {
-  if (filePaths.length === 0) {
+  if (inputPaths.length === 0) {
     console.log("No email files to process");
     return TE.right(0);
   }
 
-  // Process each email sequentially to avoid resource contention with browser
-  const processAllFiles = filePaths.reduce(
-    (acc: TE.TaskEither<GetImageError, number>, filePath) =>
+  // Process each file sequentially
+  const processAllFiles = inputPaths.reduce(
+    (acc: TE.TaskEither<GetImageError, number>, inputPath) =>
       pipe(
         acc,
         TE.chain((count) =>
           pipe(
-            generateImageFromEmailFile(filePath, outputDir),
+            processEmailFile(inputPath, outputDir),
             TE.map(() => count + 1),
+            TE.orElse((error) => {
+              console.error(
+                `Error processing ${inputPath}: ${error.message}. Continuing with next file.`,
+              );
+              return TE.right(count);
+            }),
           ),
         ),
       ),
@@ -517,43 +295,53 @@ const processEmailFiles = (
   return processAllFiles;
 };
 
-// Get-image command definition
+// Command definition
 export const getImageCommand = command({
   name: "get-image",
   description: "Generate PNG screenshots from email JSON files",
   args: {
-    files: multioption({
+    inputs: multioption({
       type: {
         ...string,
-        from: EmailJsonFiles.from,
+        from: EmailJsonPaths.from,
       },
-      long: "file",
-      short: "f",
+      long: "input",
+      short: "i",
       description: "Path to email JSON file (can be specified multiple times)",
     }),
     outputDir: option({
       type: OutputDirectory,
       long: "output",
       short: "o",
-      description: "Directory to save images (default: ./emails)",
-      defaultValue: () => "./emails",
+      description: "Directory to save screenshots (default: ./screenshots)",
+      defaultValue: () => "./screenshots",
     }),
   },
-  handler: async ({ files, outputDir }) => {
-    console.log(`Processing ${files.length} email files...`);
+  handler: async ({ inputs, outputDir }) => {
+    console.log(`Processing ${inputs.length} email files...`);
     console.log(`Output directory: ${outputDir}`);
 
+    // Main program flow
+    const program = pipe(
+      validatePaths(inputs),
+      TE.chain((validatedPaths) => processEmailFiles(validatedPaths, outputDir)),
+      TE.map((count) => {
+        console.log(`Successfully generated ${count} screenshots`);
+        return count;
+      }),
+    );
+
     return await pipe(
-      processEmailFiles(files, outputDir),
+      program,
       TE.match(
         (error) => {
           console.error("ERROR:");
           console.error(error);
-          return 1; // Error exit code
+          return 1;
         },
-        (count) => {
-          console.log(`Successfully generated ${count} images`);
-          return 0; // Success exit code
+        (_) => {
+          console.log("Process complete!");
+          return 0;
         },
       ),
     )();
