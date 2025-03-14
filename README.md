@@ -9,10 +9,11 @@ A command-line utility to extract deal information from emails.
 - Fetch emails from Fastmail using JMAP API
 - Generate screenshots of email content
 - Extract deal information using Google's Gemini AI
+- Archive emails to keep your inbox clean
 
 ## Usage
 
-DealMail provides three main commands:
+DealMail provides four main commands:
 
 ### 1. `get-emails` - Fetch Emails
 
@@ -52,6 +53,19 @@ Options:
 - `--image`, `-i`: Path to email image (can be specified multiple times)
 - `--file`, `-f`: Path to email JSON file to update (can be specified multiple times, must match --image count)
 - `--api-key`, `-k`: Google Gemini API key (fallback to GEMINI_API_KEY env var)
+
+### 4. `archive` - Archive Emails
+
+Archive emails from your inbox to the archive folder on Fastmail.
+
+```bash
+dealmail archive --username your@email.com --password your-api-token --id email-123 --id email-456
+```
+
+Options:
+- `--username`, `-u`: Fastmail username (fallback to FASTMAIL_USERNAME env var)
+- `--password`, `-p`: Fastmail API token (fallback to FASTMAIL_PASSWORD env var)
+- `--id`, `-i`: Email ID to archive (can be specified multiple times)
 
 ## Development
 

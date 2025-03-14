@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { getEmailsCommand } from '../src/commands/get-emails.js';
 import { getImageCommand } from '../src/commands/get-image.js';
 import { extractCommand } from '../src/commands/extract.js';
+import { archiveCommand } from '../src/commands/archive.js';
 
 describe('CLI Commands', () => {
   describe('get-emails command', () => {
@@ -25,6 +26,14 @@ describe('CLI Commands', () => {
       expect(extractCommand.name).toBe('extract');
       expect(extractCommand.description).toContain('Extract');
       expect(extractCommand).toHaveProperty('handler');
+    });
+  });
+  
+  describe('archive command', () => {
+    it('should be properly configured', () => {
+      expect(archiveCommand.name).toBe('archive');
+      expect(archiveCommand.description).toContain('Archive');
+      expect(archiveCommand).toHaveProperty('handler');
     });
   });
 });
